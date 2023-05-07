@@ -217,13 +217,13 @@ function action2_install ()
     else
         rm -rf "$emacs_install_dir"
         mkdir -p "$emacs_install_dir/bin"
-        if test "$emacs_compress_files" = "yes"; then
+        # if test "$emacs_compress_files" = "yes"; then
             # If we compress files we need to install gzip no matter what
             # (even in pack-emacs)
             (ensure_packages gzip \
                  && cp_bindeps_to "$emacs_install_dir/bin" gzip.exe) \
                 || return -1
-        fi
+        # fi
         echo Installing Emacs into directory $emacs_install_dir
         # HACK!!! Somehow libgmp is not installed as part of the
         # standalone Emacs build process. This is weird, but means

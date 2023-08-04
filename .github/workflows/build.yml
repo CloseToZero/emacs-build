@@ -70,7 +70,8 @@ jobs:
         with:
           # Require --nativecomp and --with-* flags, else the deps will not be included properly
           command: |
-            .\emacs-build.cmd --nativecomp --slim --no-compress --with-cairo --with-rsvg --with-tiff --build --pack-all
+            .\emacs-build.cmd --nativecomp --slim --no-compress --with-cairo --with-rsvg --with-tiff --build
+            .\emacs-build.cmd --nativecomp --slim --no-compress --with-cairo --with-rsvg --with-tiff --pack-all
           attempt_limit: 3
           attempt_delay: 2000
 

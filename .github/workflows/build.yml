@@ -118,8 +118,8 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ needs.build.outputs.version }}
-          name: emacs_without_nativecomp_${{ needs.build.outputs.version }}
+          tag_name: v${{ needs.build.outputs.version }}_without_nativecomp
+          name: emacs_${{ needs.build.outputs.version }}_without_nativecomp
           prerelease: false
           files: |
             *-full.zip

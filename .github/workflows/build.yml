@@ -118,6 +118,7 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@v1
         with:
+          target_commitish: without-nativecomp
           tag_name: v${{ needs.build.outputs.version }}_without_nativecomp
           name: emacs_${{ needs.build.outputs.version }}_without_nativecomp
           prerelease: false

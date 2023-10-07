@@ -75,15 +75,15 @@ jobs:
         if: runner.os == 'Windows'
         uses: Wandalen/wretry.action@master
         with:
-          # Require --nativecomp and --with-* flags, else the deps will not be included properly
+          # Require --with-* flags, else the deps will not be included properly
           command: |
-            .\emacs-build.cmd --nativecomp --slim --no-compress --with-cairo --with-rsvg --with-tiff --build
+            .\emacs-build.cmd --slim --no-compress --with-cairo --with-rsvg --with-tiff --build
           attempt_limit: 5
           attempt_delay: 2000
 
       - name: Package Emacs
         if: runner.os == 'Windows'
-        run: .\emacs-build.cmd --nativecomp --slim --no-compress --with-cairo --with-rsvg --with-tiff --pack-all
+        run: .\emacs-build.cmd --slim --no-compress --with-cairo --with-rsvg --with-tiff --pack-all
 
       - name: Build and pack Emacs
         if: runner.os != 'Windows'
@@ -119,7 +119,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ needs.build.outputs.version }}
-          name: emacs_${{ needs.build.outputs.version }}
+          name: emacs_without_nativecomp_${{ needs.build.outputs.version }}
           prerelease: false
           files: |
             *-full.zip

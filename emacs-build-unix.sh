@@ -54,7 +54,7 @@ echo deb_dir=$deb_dir
 
 ./configure CFLAGS="-Ofast -fno-finite-math-only -fomit-frame-pointer" \
             --prefix=/usr/local/ \
-            --with-included-regex --with-native-compilation \
+            --with-included-regex \
             --with-small-ja-dic --with-pgtk --with-xwidgets $emacs_build_flags \
             --with-sound=no --without-gpm --without-dbus \
             --without-pop --without-mailutils --without-gsettings \

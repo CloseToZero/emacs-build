@@ -55,7 +55,7 @@ jobs:
       # This is the shortest job, but in this case it pulls all MSYS/MINGW64
       - name: Clone Emacs
         if: runner.os == 'Windows'
-        run: .\emacs-build.cmd --clone --repo https://github.com/kiennq/emacs.git --depth 1
+        run: .\emacs-build.cmd --clone --repo https://github.com/emacs-mirror/emacs.git --depth 1
 
       - name: Clone Emacs
         if: runner.os != 'Windows'
@@ -118,8 +118,9 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ needs.build.outputs.version }}
-          name: emacs_${{ needs.build.outputs.version }}
+          target_commitish: emacs-29
+          tag_name: v${{ needs.build.outputs.version }}_emacs_29
+          name: emacs_${{ needs.build.outputs.version }}_emacs_29
           prerelease: false
           files: |
             *-full.zip

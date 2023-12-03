@@ -77,13 +77,13 @@ jobs:
         with:
           # Require --nativecomp and --with-* flags, else the deps will not be included properly
           command: |
-            .\emacs-build.cmd --nativecomp --slim --no-compress --with-cairo --with-rsvg --with-tiff --build
+            .\emacs-build.cmd --slim --no-compress --with-cairo --with-rsvg --with-tiff --build
           attempt_limit: 5
           attempt_delay: 2000
 
       - name: Package Emacs
         if: runner.os == 'Windows'
-        run: .\emacs-build.cmd --nativecomp --slim --no-compress --with-cairo --with-rsvg --with-tiff --pack-all
+        run: .\emacs-build.cmd --slim --no-compress --with-cairo --with-rsvg --with-tiff --pack-all
 
       - name: Build and pack Emacs
         if: runner.os != 'Windows'
@@ -118,9 +118,9 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@v1
         with:
-          target_commitish: emacs-29
-          tag_name: v${{ needs.build.outputs.version }}_emacs_29
-          name: emacs_${{ needs.build.outputs.version }}_emacs_29
+          target_commitish: emacs-29-without-nativecomp
+          tag_name: v${{ needs.build.outputs.version }}_emacs_29_without_nativecomp
+          name: emacs_${{ needs.build.outputs.version }}_emacs_29_without_nativecomp
           prerelease: false
           files: |
             *-full.zip

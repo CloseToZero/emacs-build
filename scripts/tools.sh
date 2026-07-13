@@ -86,10 +86,18 @@ function list_filter () {
     while test -n "$*"; do
         case $1 in
             -e) shift;
-                grep -P -v "^(`echo $1 | sed 's,[ \n],|,g'`)" -;
+                if test -n "$1"; then
+                    grep -P -v "^(`echo $1 | sed 's,[ \n],|,g'`)" -
+                else
+                    cat -
+                fi;
                 return 0;;
             -i) shift;
-                grep -P "`echo $1 | sed 's,[ \n],|,g'`" -;
+                if test -n "$1"; then
+                    grep -P "`echo $1 | sed 's,[ \n],|,g'`" -
+                else
+                    cat -
+                fi;
                 return 0;;
             *) echo "Unknown option: $1"; return -1;;
         esac
@@ -101,10 +109,7 @@ function list_filter () {
 
 function raw_dependencies_wo_versions ()
 {
-    local munge_pgks="
-             s,$mingw_prefix-libwinpthread\$,$mingw_prefix-libwinpthread-git,g;
-             s,$mingw_prefix-libtre\$,$mingw_prefix-libtre-git,g;"
-    pacman -Qii $* | grep Depends | sed -e 's,[>=][^ ]*,,g;s,Depends[^:]*:,,g;s,None,,g' -e "$munge_pgks"
+    pacman -Qii $* | grep Depends | sed -e 's,[>=][^ ]*,,g;s,Depends[^:]*:,,g;s,None,,g'
 }
 
 function full_dependency_list ()

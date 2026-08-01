@@ -21,7 +21,8 @@ emacs-build.cmd --clone --deps --build --pack-emacs --pdf-tools --mu --isync --a
 goto:eof
 
 :nativecomp
-emacs-build.cmd --nativecomp --clone --deps --build --pack-emacs --pdf-tools --mu --isync --aspell --pack-all
+emacs-build.cmd --nativecomp-aot --clone --deps --build --pack-emacs ^
+  --pdf-tools --mu --isync --aspell --pack-all
 goto:eof
 
 :help

@@ -1,0 +1,34 @@
+From 2f8e327d6984889c2c62086e0318c626951eb61c Mon Sep 17 00:00:00 2001
+From: Kien Nguyen <kien.n.quang@gmail.com>
+Date: Wed, 15 Jul 2026 15:56:55 -0700
+Subject: [PATCH] Fix W32 taskbar badge DC leak
+
+* src/w32fns.c (Fw32_badge): Release the screen DC used to query display DPI.
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+
+Copilot-Session: ecdb796b-3d20-4c16-b053-ee0a480a02e4
+---
+ src/w32fns.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/w32fns.c b/src/w32fns.c
+index df1f44e63422..d2e2ee5f3b4a 100644
+--- a/src/w32fns.c
++++ b/src/w32fns.c
+@@ -11191,9 +11191,11 @@ DEFUN ("w32-badge",
+       lf.lfQuality = ANTIALIASED_QUALITY;
+       /* Negative lfHeight indicates pixel units vs. positive in points.
+ 	 Use the LOGPIXELSY px/in of the primary monitor.  */
++      HDC screen_dc = GetDC (NULL);
+       lf.lfHeight = -MulDiv (icon_height / 2, /* Fit ~3 chars.  */
+ 			     72,
+-			     GetDeviceCaps (GetDC (NULL), LOGPIXELSY));
++			     GetDeviceCaps (screen_dc, LOGPIXELSY));
++      ReleaseDC (NULL, screen_dc);
+       /* Ensure lfHeight pixel interpretation.  */
+       int old_map_mode = SetMapMode (dc, MM_TEXT);
+       HFONT scaled_font = CreateFontIndirect (&lf);
+-- 
+2.55.0.windows.3
+

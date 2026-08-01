@@ -267,9 +267,10 @@ function action3_package_deps ()
 function write_source_info ()
 {
     cd "$emacs_full_install_dir"
+    local source_revision=`git -C "$emacs_source_dir" rev-parse HEAD`
     cat <<EOF > source_info.txt
 repo: $emacs_repo
-branch/commit: $emacs_branch
+branch/commit: $source_revision
 EOF
 }
 

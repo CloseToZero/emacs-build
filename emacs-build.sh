@@ -147,7 +147,12 @@ function emacs_configure_build_dir ()
     #     fi
     # done
     for f in $features; do
-        options="$options --with-$f"
+        if test "$f" = "native-compilation" \
+                && test "$emacs_nativecomp_aot" = "yes"; then
+            options="$options --with-native-compilation=aot"
+        else
+            options="$options --with-$f"
+        fi
     done
 
     for f in $inactive_features; do
@@ -466,6 +471,7 @@ emacs_slim_build=no
 emacs_build_threads=$((`nproc`*2))
 emacs_build_options="--disable-build-details --without-dbus"
 emacs_apply_patches=yes
+emacs_nativecomp_aot=no
 emacs_pkg_msix=no
 # This is needed for pacman to return the right text
 export LANG=C
@@ -497,7 +503,8 @@ while test -n "$*"; do
         --without-*) delete_feature `echo $1 | sed -e 's,--without-,,'`;;
         --with-*) add_feature `echo $1 | sed -e 's,--with-,,'`;;
         --enable-*|--disable-*) emacs_build_options="$emacs_build_options $1";;
-        --nativecomp-aot) export NATIVE_FULL_AOT=1;;
+        --nativecomp-aot) export NATIVE_FULL_AOT=1
+                          emacs_nativecomp_aot=yes;;
         --slim) add_all_features
                 # We delete features here, so that user can repopulate them
                 delete_feature cairo # cairo is not available on Windows

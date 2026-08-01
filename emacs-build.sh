@@ -113,8 +113,10 @@ function emacs_dependencies ()
         errcho Inspecting required packages for build features
         errcho   $features
         local packages=`emacs_root_packages`
-        # emacs_dependencies=`full_dependency_list "$packages" "${mingw_prefix}-glib2" "Emacs"`
-        emacs_dependencies=`full_dependency_list "$packages" "" "Emacs"`
+        # GLib's development scripts require Python, but Emacs does not.
+        # Bundling it shadows the user's Python through Emacs's exec-path.
+        local skipped="${mingw_prefix}-python ${mingw_prefix}-python-packaging"
+        emacs_dependencies=`full_dependency_list "$packages" "$skipped" "Emacs"`
         errcho Total packages required:
         for p in $emacs_dependencies; do
             errcho "  $p"
@@ -442,7 +444,15 @@ packing_slim_exclusion="
 .*share/emacs/.*/lisp/play
 "
 
-dependency_exclusions=""
+# Python is not an Emacs runtime dependency.  Exclude bindings and GLib's
+# Python-based development tools so the package never shadows the user's Python.
+dependency_exclusions="
+bin/gdbus-codegen
+bin/glib-genmarshal
+bin/glib-mkenums
+bin/gtester-report
+lib/python
+"
 all_features=`feature_list | cut -f 1 -d ' '`
 add_all_features
 
@@ -535,7 +545,7 @@ while test -n "$*"; do
 done
 
 if test "$emacs_slim_build" = "yes"; then
-    dependency_exclusions="$dependency_slim_exclusions"
+    dependency_exclusions="$dependency_exclusions $dependency_slim_exclusions"
 fi
 if test -z "$emacs_branch"; then
     emacs_branch="master"

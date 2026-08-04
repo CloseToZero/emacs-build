@@ -1,0 +1,52 @@
+diff --git a/src/w32fns.c b/src/w32fns.c
+index d33f564b3..2566fa25e 100644
+--- a/src/w32fns.c
++++ b/src/w32fns.c
+@@ -8676,6 +8676,38 @@ DEFUN ("w32-send-sys-command", Fw32_send_sys_command,
+   return Qnil;
+ }
+-
++
++DEFUN ("w32-set-title-bar-visible", Fw32_set_title_bar_visible,
++       Sw32_set_title_bar_visible, 2, 2, 0,
++       doc: /* Set FRAME's native title bar visibility according to VISIBLE.
++FRAME must be a live W32 frame; nil means the selected frame.
++If VISIBLE is non-nil, show the title bar.  Otherwise hide it while
++preserving the resize border.  This does not change FRAME's
++`undecorated' or `fullscreen' parameters. */)
++  (Lisp_Object frame, Lisp_Object visible)
++{
++  struct frame *f = decode_window_system_frame (frame);
++
++  HWND hwnd = FRAME_W32_WINDOW (f);
++  DWORD dwStyle = GetWindowLong (hwnd, GWL_STYLE);
++
++  block_input ();
++  if (NILP (visible))
++    dwStyle = (dwStyle & ~WS_DLGFRAME) | WS_BORDER | WS_THICKFRAME;
++  else
++    dwStyle |= (WS_CAPTION | WS_THICKFRAME);
++
++  SetWindowLong (hwnd, GWL_STYLE, dwStyle);
++  SetWindowPos (hwnd, HWND_TOP, 0, 0, 0, 0,
++		SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE
++		  | SWP_FRAMECHANGED);
++
++  f->output_data.w32->dwStyle = GetWindowLong (hwnd, GWL_STYLE);
++
++  unblock_input ();
++
++  return Qnil;
++}
++
+ #ifndef CYGWIN
+ static BOOL (WINAPI *pfnShellExecuteExW) (LPSHELLEXECUTEINFOW);
+ #endif /* !CYGWIN */
+@@ -11968,6 +12000,7 @@ syms_of_w32fns (void)
+   defsubr (&Sw32_define_rgb_color);
+   defsubr (&Sw32_display_monitor_attributes_list);
+   defsubr (&Sw32_send_sys_command);
++  defsubr (&Sw32_set_title_bar_visible);
+   defsubr (&Sw32_shell_execute);
+   defsubr (&Sw32_register_hot_key);
+   defsubr (&Sw32_unregister_hot_key);

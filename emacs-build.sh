@@ -470,7 +470,8 @@ emacs_compress_files=no
 emacs_build_version=0.4
 emacs_slim_build=no
 emacs_build_threads=$((`nproc`*2))
-emacs_build_options="--disable-build-details --without-dbus"
+# Elpaca uses the build time to date built-in packages on development builds.
+emacs_build_options="--enable-build-details --without-dbus"
 emacs_apply_patches=yes
 emacs_nativecomp_aot=no
 emacs_pkg_msix=no

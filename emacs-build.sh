@@ -364,6 +364,7 @@ lcms2 mingw-lcms2
 native-compilation mingw-libgccjit
 png mingw-libpng
 rsvg mingw-librsvg
+sqlite3 mingw-sqlite3
 tiff mingw-libtiff
 tree-sitter mingw-libtree-sitter
 xml2 mingw-libxml2

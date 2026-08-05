@@ -1,0 +1,111 @@
+diff --git a/src/w32fns.c b/src/w32fns.c
+--- a/src/w32fns.c
++++ b/src/w32fns.c
+@@ -4514,6 +4514,36 @@ maybe_pass_notification (HWND hwnd)
+ }
+ #endif	/* WINDOWSNT */
+ 
++/* Return the outer rectangle that lets a captionless maximized window fill
++   the monitor work area without covering reserved UI such as the taskbar.  */
++static bool
++w32_maximized_work_area_rect (HWND hwnd, RECT *monitor_rect,
++                              RECT *window_rect)
++{
++  struct MONITOR_INFO monitor_info = { sizeof (monitor_info) };
++  WINDOWINFO window_info = { sizeof (window_info) };
++
++  if (!monitor_from_window_fn || !get_monitor_info_fn)
++    return false;
++
++  HMONITOR monitor =
++    monitor_from_window_fn (hwnd, MONITOR_DEFAULT_TO_NEAREST);
++  if (!get_monitor_info_fn (monitor, &monitor_info)
++      || !GetWindowInfo (hwnd, &window_info))
++    return false;
++
++  *monitor_rect = monitor_info.rcMonitor;
++  window_rect->left =
++    monitor_info.rcWork.left - window_info.cxWindowBorders;
++  window_rect->top =
++    monitor_info.rcWork.top - window_info.cyWindowBorders;
++  window_rect->right =
++    monitor_info.rcWork.right + window_info.cxWindowBorders;
++  window_rect->bottom =
++    monitor_info.rcWork.bottom + window_info.cyWindowBorders;
++  return true;
++}
++
+ /* Main window procedure */
+ 
+ static LRESULT CALLBACK
+@@ -5755,12 +5785,31 @@ w32_wnd_proc (HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+ 	 manager doesn't, there's no reason to do it ourselves.  */
+       return 0;
+ 
+     case WM_GETMINMAXINFO:
+-      /* Hack to allow resizing the Emacs frame above the screen size.
+-	 Note that Windows 9x limits coordinates to 16-bits.  */
+-      ((LPMINMAXINFO) lParam)->ptMaxTrackSize.x = 32767;
+-      ((LPMINMAXINFO) lParam)->ptMaxTrackSize.y = 32767;
+-      return 0;
++      {
++        LPMINMAXINFO info = (LPMINMAXINFO) lParam;
++        DWORD style = GetWindowLong (hwnd, GWL_STYLE);
++        RECT monitor_rect;
++        RECT window_rect;
++
++        /* Captionless resizable windows otherwise maximize to the complete
++           monitor and cover the taskbar.  */
++        if ((style & WS_THICKFRAME) && !(style & WS_DLGFRAME)
++            && w32_maximized_work_area_rect
++                 (hwnd, &monitor_rect, &window_rect))
++          {
++            info->ptMaxPosition.x = window_rect.left - monitor_rect.left;
++            info->ptMaxPosition.y = window_rect.top - monitor_rect.top;
++            info->ptMaxSize.x = window_rect.right - window_rect.left;
++            info->ptMaxSize.y = window_rect.bottom - window_rect.top;
++          }
++
++        /* Hack to allow resizing the Emacs frame above the screen size.
++           Note that Windows 9x limits coordinates to 16-bits.  */
++        info->ptMaxTrackSize.x = 32767;
++        info->ptMaxTrackSize.y = 32767;
++        return 0;
++      }
+ 
+     case WM_SETCURSOR:
+       if (LOWORD (lParam) == HTCLIENT)
+@@ -8681,14 +8730,17 @@ DEFUN ("w32-set-title-bar-visible", Fw32_set_title_bar_visible,
+        doc: /* Set FRAME's native title bar visibility according to VISIBLE.
+ FRAME must be a live W32 frame; nil means the selected frame.
+ If VISIBLE is non-nil, show the title bar.  Otherwise hide it while
+-preserving the resize border.  This does not change FRAME's
+-`undecorated' or `fullscreen' parameters. */)
++preserving the resize border and the monitor work area.  This does not
++change FRAME's `undecorated' or `fullscreen' parameters. */)
+   (Lisp_Object frame, Lisp_Object visible)
+ {
+   struct frame *f = decode_window_system_frame (frame);
+ 
+   HWND hwnd = FRAME_W32_WINDOW (f);
+   DWORD dwStyle = GetWindowLong (hwnd, GWL_STYLE);
++  bool maximized = IsZoomed (hwnd);
++  RECT monitor_rect;
++  RECT window_rect;
+ 
+   block_input ();
+   if (NILP (visible))
+@@ -8702,6 +8754,13 @@ preserving the resize border.  This does not change FRAME's
+ 		  | SWP_FRAMECHANGED);
+ 
+   f->output_data.w32->dwStyle = GetWindowLong (hwnd, GWL_STYLE);
++  if (maximized
++      && w32_maximized_work_area_rect
++           (hwnd, &monitor_rect, &window_rect))
++    SetWindowPos (hwnd, HWND_TOP, window_rect.left, window_rect.top,
++                  window_rect.right - window_rect.left,
++                  window_rect.bottom - window_rect.top,
++                  SWP_NOZORDER | SWP_NOACTIVATE);
+ 
+   unblock_input ();
+ 

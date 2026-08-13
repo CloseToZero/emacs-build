@@ -1,0 +1,16 @@
+diff --git a/src/w32proc.c b/src/w32proc.c
+--- a/src/w32proc.c
++++ b/src/w32proc.c
+@@ -3375,6 +3375,12 @@ sys_select (int nfds, SELECT_TYPE *rfds, SELECT_TYPE *wfds, SELECT_TYPE *efds,
+ 			 cp->pid));
+ #endif
+ 	      sig_handlers[SIGCHLD] (SIGCHLD);
++
++	      /* The handler clears the caller's timeout through
++		 input_available_clear_time.  Keep our millisecond copy in
++		 sync so we don't resume waiting after reporting the process
++		 status change.  */
++	      timeout_ms = 0;
+ 	    }
+ 	}
+       else if (fdindex[active] == -1)

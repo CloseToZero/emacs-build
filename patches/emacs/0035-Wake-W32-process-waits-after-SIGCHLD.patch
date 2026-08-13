@@ -1,3 +1,26 @@
+diff --git a/src/process.c b/src/process.c
+--- a/src/process.c
++++ b/src/process.c
+@@ -5963,2 +5963,19 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
++#ifdef WINDOWSNT
++      /* sys_select delivers the emulated SIGCHLD synchronously.  It can
++	 also report process output in the same call, so NFDS need not be
++	 zero.  Notify status changes after giving keyboard input priority;
++	 otherwise a sentinel can remain pending until the next user event.
++	 status_notify drains any remaining process output before running the
++	 sentinel.  */
++      if (update_tick != process_tick)
++	{
++	  int status_output = status_notify (NULL, wait_proc);
++	  if (got_some_output < status_output)
++	    got_some_output = status_output;
++	  if (do_display)
++	    redisplay_preserve_echo_area (113);
++	}
++#endif
++
+       /* Check for data from a process.  */
+       if (no_avail || nfds == 0)
 diff --git a/src/w32proc.c b/src/w32proc.c
 --- a/src/w32proc.c
 +++ b/src/w32proc.c

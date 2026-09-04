@@ -59,10 +59,11 @@ switches, the taskbar indicator, clicking that indicator, and switching
 between this window and another application. Also check Microsoft Pinyin.
 Existing running Emacs instances and installed packages were not replaced.
 
-To rebuild after further source changes:
+To rebuild after further source changes, use the top-level build directory so
+that the dump records the installed native-Lisp paths:
 
 ```powershell
-./scripts/msys2.cmd -c 'make -C build/emacs-31-mingw-w64-ucrt-x86_64/src -j8'
+./scripts/msys2.cmd -c 'make -C build/emacs-31-mingw-w64-ucrt-x86_64 -j8'
 ```
 
 To revert just this source change, use `git apply -R` with patch 0036 from

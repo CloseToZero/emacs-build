@@ -1,0 +1,15 @@
+diff --git a/src/w32fns.c b/src/w32fns.c
+--- a/src/w32fns.c
++++ b/src/w32fns.c
+@@ -3716,7 +3716,10 @@ w32_msg_pump (deferred_msg * msg_buf)
+       /* DebPrint (("w32_msg_pump: %s time:%u\n", */
+       /*            w32_name_of_message (msg.message), msg.time)); */
+ 
+-      if (msg.hwnd == NULL)
++      /* Thread timers have no window, but DispatchMessage must still run
++         their TIMERPROC callbacks.  In particular, system components such
++         as text services can use these timers for deferred work.  */
++      if (msg.hwnd == NULL && msg.message != WM_TIMER)
+ 	{
+ 	  switch (msg.message)
+ 	    {

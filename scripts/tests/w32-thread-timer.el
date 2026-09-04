@@ -1,0 +1,7 @@
+(module-load (getenv "TIMER_PROBE_MODULE"))
+(unless (w32-thread-timer-start) (kill-emacs 3))
+(sleep-for 2)
+(let ((result (w32-thread-timer-result)))
+  (with-temp-file (getenv "TIMER_PROBE_OUTPUT")
+    (insert (format "%s\n" result)))
+  (kill-emacs (if (= result 2) 0 1)))

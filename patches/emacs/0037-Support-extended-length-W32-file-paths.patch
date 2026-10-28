@@ -1,0 +1,2821 @@
+diff --git a/nt/emacs-ARM64.manifest b/nt/emacs-ARM64.manifest
+index bb5e2d375..b76841dcd 100644
+--- a/nt/emacs-ARM64.manifest
++++ b/nt/emacs-ARM64.manifest
+@@ -35,6 +35,7 @@
+   <asmv3:application>
+     <asmv3:windowsSettings xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">
+       <dpiAware>true</dpiAware>
++      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+     </asmv3:windowsSettings>
+   </asmv3:application>
+ </assembly>
+diff --git a/nt/emacs-x64.manifest b/nt/emacs-x64.manifest
+index bd55a82cf..b2d7911ca 100644
+--- a/nt/emacs-x64.manifest
++++ b/nt/emacs-x64.manifest
+@@ -35,6 +35,7 @@
+   <asmv3:application>
+     <asmv3:windowsSettings xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">
+       <dpiAware>true</dpiAware>
++      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+     </asmv3:windowsSettings>
+   </asmv3:application>
+ </assembly>
+diff --git a/nt/emacs-x86.manifest b/nt/emacs-x86.manifest
+index 5e0a89262..9de1168ca 100644
+--- a/nt/emacs-x86.manifest
++++ b/nt/emacs-x86.manifest
+@@ -35,6 +35,7 @@
+   <asmv3:application>
+     <asmv3:windowsSettings xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">
+       <dpiAware>true</dpiAware>
++      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+     </asmv3:windowsSettings>
+   </asmv3:application>
+ </assembly>
+diff --git a/nt/inc/ms-w32.h b/nt/inc/ms-w32.h
+index ca2e2824a..9de6da7dc 100644
+--- a/nt/inc/ms-w32.h
++++ b/nt/inc/ms-w32.h
+@@ -154,8 +154,11 @@ #define WIN32_LEAN_AND_MEAN
+ #define MAXPATHLEN      _MAX_PATH
+ #endif
+ 
+-/* This is used to hold UTF-8 encoded file names.  */
+-#define MAX_UTF8_PATH   (MAXPATHLEN * 4)
++/* Extended-length Win32 paths, including their terminating null.  Do not
++   redefine MAX_PATH or MAXPATHLEN: those also describe buffers in the
++   Windows and CRT interfaces.  */
++#define MAX_UTF16_PATH  32768
++#define MAX_UTF8_PATH   (MAX_UTF16_PATH * 4)
+ 
+ #ifdef HAVE_NTGUI
+ # ifndef HAVE_WINDOW_SYSTEM
+diff --git a/src/dynlib.c b/src/dynlib.c
+index ce486ddf1..5b27c7bc1 100644
+--- a/src/dynlib.c
++++ b/src/dynlib.c
+@@ -79,21 +79,36 @@ dynlib_open (const char *dll_fname)
+   else
+     {
+       /* LoadLibrary wants backslashes.  */
++      if (strlen (dll_fname) >= sizeof dll_fname_local)
++	{
++	  errno = ENAMETOOLONG;
++	  dynlib_last_err = ERROR_FILENAME_EXCED_RANGE;
++	  return NULL;
++	}
+       strcpy (dll_fname_local, dll_fname);
+       unixtodos_filename (dll_fname_local);
+ 
+       if (w32_unicode_filenames)
+ 	{
+-	  wchar_t dll_fname_w[MAX_PATH];
++	  wchar_t dll_fname_w[MAX_UTF16_PATH];
+ 
+-	  filename_to_utf16 (dll_fname_local, dll_fname_w);
++	  if (w32_filename_to_utf16 (dll_fname_local, dll_fname_w,
++				     ARRAYELTS (dll_fname_w)) < 0)
++	    {
++	      dynlib_last_err = GetLastError ();
++	      return NULL;
++	    }
+ 	  hdll = LoadLibraryW (dll_fname_w);
+ 	}
+       else
+ 	{
+ 	  char dll_fname_a[MAX_PATH];
+ 
+-	  filename_to_ansi (dll_fname_local, dll_fname_a);
++	  if (filename_to_ansi (dll_fname_local, dll_fname_a) < 0)
++	    {
++	      dynlib_last_err = GetLastError ();
++	      return NULL;
++	    }
+ 	  hdll = LoadLibraryA (dll_fname_a);
+ 	}
+     }
+@@ -136,7 +151,7 @@ dynlib_addr (void (*funcptr) (void), const char **fname, const char **symname)
+   char *dll_fn = NULL;
+   HMODULE hm_kernel32 = NULL;
+   HMODULE hm_dll = NULL;
+-  wchar_t mfn_w[MAX_PATH];
++  wchar_t mfn_w[MAX_UTF16_PATH];
+   char mfn_a[MAX_PATH];
+   void *addr = (void *) funcptr;
+ 
+@@ -191,11 +206,12 @@ dynlib_addr (void (*funcptr) (void), const char **fname, const char **symname)
+ 
+       if (w32_unicode_filenames)
+ 	{
+-	  retval = GetModuleFileNameW (hm_dll, mfn_w, MAX_PATH);
+-	  if (retval > 0 && retval < MAX_PATH
+-	      && filename_from_utf16 (mfn_w, dll_filename) == 0)
++	  retval = GetModuleFileNameW (hm_dll, mfn_w, ARRAYELTS (mfn_w));
++	  if (retval > 0 && retval < ARRAYELTS (mfn_w)
++	      && w32_filename_from_utf16 (mfn_w, dll_filename,
++					 sizeof dll_filename) == 0)
+ 	    dll_fn = dll_filename;
+-	  else if (retval == MAX_PATH)
++	  else if (retval >= ARRAYELTS (mfn_w))
+ 	    dynlib_last_err = ERROR_INSUFFICIENT_BUFFER;
+ 	  else
+ 	    dynlib_last_err = GetLastError ();
+diff --git a/src/emacs.c b/src/emacs.c
+index 11fe56773..8462dd121 100644
+--- a/src/emacs.c
++++ b/src/emacs.c
+@@ -3321,7 +3321,7 @@ decode_env_path (const char *evarname, const char *defalt, bool empty)
+ 	q = _mbschr (p, SEPCHAR);
+ 	if (q)
+ 	  *q = '\0';
+-	cnv_result = filename_from_ansi (p, d);
++	cnv_result = filename_from_ansi_n (p, d, 4 * strlen (p) + 1);
+ 	if (q)
+ 	  {
+ 	    *q++ = SEPCHAR;
+diff --git a/src/sound.c b/src/sound.c
+index 5c2dfa08e..1725f2183 100644
+--- a/src/sound.c
++++ b/src/sound.c
+@@ -1272,7 +1272,8 @@ do_play_sound (const char *psz_file_or_data, unsigned long ui_volume, bool in_me
+ 	{
+ 	  char fname_a[MAX_PATH], shortname[MAX_PATH], *fname_to_use;
+ 
+-	  filename_to_ansi (psz_file_or_data, fname_a);
++	  if (filename_to_ansi (psz_file_or_data, fname_a) < 0)
++	    mci_error = MCIERR_FILE_NOT_FOUND;
+ 	  fname_to_use = fname_a;
+ 	  /* If the file name is not encodable in ANSI, try its short 8+3
+ 	     alias.  This will only work if w32_unicode_filenames is
+@@ -1299,26 +1300,28 @@ do_play_sound (const char *psz_file_or_data, unsigned long ui_volume, bool in_me
+ 	}
+       else
+ 	{
+-	  wchar_t sz_cmd_buf_w[520];
++	  wchar_t sz_cmd_buf_w[MAX_UTF16_PATH + 64];
+ 	  wchar_t sz_ret_buf_w[520];
+-	  wchar_t fname_w[MAX_PATH];
+-
+-	  filename_to_utf16 (psz_file_or_data, fname_w);
+-	  memset (sz_cmd_buf_w, 0, sizeof (sz_cmd_buf_w));
+-	  memset (sz_ret_buf_w, 0, sizeof (sz_ret_buf_w));
+-	  /* _swprintf is not available on Windows 9X, so we construct the
+-	     UTF-16 command string by hand.  */
+-	  wcscpy (sz_cmd_buf_w, L"open \"");
+-	  wcscat (sz_cmd_buf_w, fname_w);
+-	  wcscat (sz_cmd_buf_w, L"\" alias GNUEmacs_PlaySound_Device wait");
+-	  mci_error = mciSendStringW (sz_cmd_buf_w,
+-				      sz_ret_buf_w, ARRAYELTS (sz_ret_buf_w) , NULL);
++	  wchar_t fname_w[MAX_UTF16_PATH];
++
++	  if (w32_filename_to_utf16 (psz_file_or_data, fname_w,
++				     ARRAYELTS (fname_w)) < 0)
++	    mci_error = MCIERR_FILE_NOT_FOUND;
++	  else
++	    {
++	      memset (sz_ret_buf_w, 0, sizeof (sz_ret_buf_w));
++	      wcscpy (sz_cmd_buf_w, L"open \"");
++	      wcscat (sz_cmd_buf_w, fname_w);
++	      wcscat (sz_cmd_buf_w, L"\" alias GNUEmacs_PlaySound_Device wait");
++	      mci_error = mciSendStringW (sz_cmd_buf_w, sz_ret_buf_w,
++					 ARRAYELTS (sz_ret_buf_w), NULL);
++	    }
+ 	}
+       if (mci_error != 0)
+ 	{
+-	  strcpy (warn_text,
+-		  "mciSendString: 'open' command failed to open sound file ");
+-	  strcat (warn_text, psz_file_or_data);
++	  snprintf (warn_text, sizeof warn_text,
++		    "mciSendString: 'open' command failed to open sound file %s",
++		    psz_file_or_data);
+ 	  SOUND_WARNING (mciGetErrorString, mci_error, warn_text);
+ 	  i_result = (int) mci_error;
+ 	  return i_result;
+@@ -1330,9 +1333,9 @@ do_play_sound (const char *psz_file_or_data, unsigned long ui_volume, bool in_me
+ 				  NULL);
+       if (mci_error != 0)
+ 	{
+-	  strcpy (warn_text,
+-		  "mciSendString: 'play' command failed to play sound file ");
+-	  strcat (warn_text, psz_file_or_data);
++	  snprintf (warn_text, sizeof warn_text,
++		    "mciSendString: 'play' command failed to play sound file %s",
++		    psz_file_or_data);
+ 	  SOUND_WARNING (mciGetErrorString, mci_error, warn_text);
+ 	  i_result = (int) mci_error;
+ 	}
+diff --git a/src/w32.c b/src/w32.c
+index 409d4238b..b9d9bbff2 100644
+--- a/src/w32.c
++++ b/src/w32.c
+@@ -810,7 +810,7 @@ get_file_security (const char *lpFileName,
+     }
+   if (w32_unicode_filenames)
+     {
+-      wchar_t filename_w[MAX_PATH];
++      wchar_t filename_w[MAX_UTF16_PATH];
+ 
+       if (g_b_init_get_file_security_w == 0)
+ 	{
+@@ -824,7 +824,9 @@ get_file_security (const char *lpFileName,
+ 	  errno = ENOTSUP;
+ 	  return FALSE;
+ 	}
+-      filename_to_utf16 (lpFileName, filename_w);
++      if (w32_filename_to_utf16 (lpFileName, filename_w,
++				 ARRAYELTS (filename_w)) < 0)
++	return FALSE;
+       return (s_pfn_Get_File_SecurityW (filename_w, RequestedInformation,
+ 					pSecurityDescriptor, nLength,
+ 					lpnLengthNeeded));
+@@ -845,7 +847,8 @@ get_file_security (const char *lpFileName,
+ 	  errno = ENOTSUP;
+ 	  return FALSE;
+ 	}
+-      filename_to_ansi (lpFileName, filename_a);
++      if (filename_to_ansi (lpFileName, filename_a) < 0)
++	return FALSE;
+       return (s_pfn_Get_File_SecurityA (filename_a, RequestedInformation,
+ 					pSecurityDescriptor, nLength,
+ 					lpnLengthNeeded));
+@@ -867,7 +870,7 @@ set_file_security (const char *lpFileName,
+     }
+   if (w32_unicode_filenames)
+     {
+-      wchar_t filename_w[MAX_PATH];
++      wchar_t filename_w[MAX_UTF16_PATH];
+ 
+       if (g_b_init_set_file_security_w == 0)
+ 	{
+@@ -881,7 +884,9 @@ set_file_security (const char *lpFileName,
+ 	  errno = ENOTSUP;
+ 	  return FALSE;
+ 	}
+-      filename_to_utf16 (lpFileName, filename_w);
++      if (w32_filename_to_utf16 (lpFileName, filename_w,
++				 ARRAYELTS (filename_w)) < 0)
++	return FALSE;
+       return (s_pfn_Set_File_SecurityW (filename_w, SecurityInformation,
+ 					pSecurityDescriptor));
+     }
+@@ -901,7 +906,8 @@ set_file_security (const char *lpFileName,
+ 	  errno = ENOTSUP;
+ 	  return FALSE;
+ 	}
+-      filename_to_ansi (lpFileName, filename_a);
++      if (filename_to_ansi (lpFileName, filename_a) < 0)
++	return FALSE;
+       return (s_pfn_Set_File_SecurityA (filename_a, SecurityInformation,
+ 					pSecurityDescriptor));
+     }
+@@ -926,7 +932,7 @@ set_named_security_info (LPCTSTR lpObjectName,
+     }
+   if (w32_unicode_filenames)
+     {
+-      wchar_t filename_w[MAX_PATH];
++      wchar_t filename_w[MAX_UTF16_PATH];
+ 
+       if (g_b_init_set_named_security_info_w == 0)
+ 	{
+@@ -940,7 +946,9 @@ set_named_security_info (LPCTSTR lpObjectName,
+ 	  errno = ENOTSUP;
+ 	  return ENOTSUP;
+ 	}
+-      filename_to_utf16 (lpObjectName, filename_w);
++      if (w32_filename_to_utf16 (lpObjectName, filename_w,
++				 ARRAYELTS (filename_w)) < 0)
++	return GetLastError ();
+       return (s_pfn_Set_Named_Security_InfoW (filename_w, ObjectType,
+ 					      SecurityInformation, psidOwner,
+ 					      psidGroup, pDacl, pSacl));
+@@ -961,7 +969,8 @@ set_named_security_info (LPCTSTR lpObjectName,
+ 	  errno = ENOTSUP;
+ 	  return ENOTSUP;
+ 	}
+-      filename_to_ansi (lpObjectName, filename_a);
++      if (filename_to_ansi (lpObjectName, filename_a) < 0)
++	return GetLastError ();
+       return (s_pfn_Set_Named_Security_InfoA (filename_a, ObjectType,
+ 					      SecurityInformation, psidOwner,
+ 					      psidGroup, pDacl, pSacl));
+@@ -1210,7 +1219,7 @@ create_symbolic_link (LPCSTR lpSymlinkFilename,
+     }
+   if (w32_unicode_filenames)
+     {
+-      wchar_t symfn_w[MAX_PATH], tgtfn_w[MAX_PATH];
++      wchar_t symfn_w[MAX_UTF16_PATH], tgtfn_w[MAX_UTF16_PATH];
+ 
+       if (g_b_init_create_symbolic_link_w == 0)
+ 	{
+@@ -1225,8 +1234,17 @@ create_symbolic_link (LPCSTR lpSymlinkFilename,
+ 	  return 0;
+ 	}
+ 
+-      filename_to_utf16 (lpSymlinkFilename, symfn_w);
+-      filename_to_utf16 (lpTargetFileName, tgtfn_w);
++      if (w32_filename_to_utf16 (lpSymlinkFilename, symfn_w,
++				 ARRAYELTS (symfn_w)) < 0)
++	return 0;
++      /* A relative target must remain relative to the link, not to the
++	 process's current directory.  */
++      if ((IS_DIRECTORY_SEP (lpTargetFileName[0])
++	   || IS_DEVICE_SEP (lpTargetFileName[1]))
++	  ? w32_filename_to_utf16 (lpTargetFileName, tgtfn_w,
++				   ARRAYELTS (tgtfn_w)) < 0
++	  : filename_to_utf16 (lpTargetFileName, tgtfn_w) < 0)
++	return 0;
+       retval = s_pfn_Create_Symbolic_LinkW (symfn_w, tgtfn_w, dwFlags);
+       /* If we were denied creation of the symlink, try again after
+ 	 enabling the SeCreateSymbolicLinkPrivilege for our process.  */
+@@ -1260,8 +1278,9 @@ create_symbolic_link (LPCSTR lpSymlinkFilename,
+ 	  return 0;
+ 	}
+ 
+-      filename_to_ansi (lpSymlinkFilename, symfn_a);
+-      filename_to_ansi (lpTargetFileName, tgtfn_a);
++      if (filename_to_ansi (lpSymlinkFilename, symfn_a) < 0
++	  || filename_to_ansi (lpTargetFileName, tgtfn_a) < 0)
++	return 0;
+       retval = s_pfn_Create_Symbolic_LinkA (symfn_a, tgtfn_a, dwFlags);
+       /* If we were denied creation of the symlink, try again after
+ 	 enabling the SeCreateSymbolicLinkPrivilege for our process.  */
+@@ -1760,122 +1779,185 @@ codepage_for_filenames (CPINFO *cp_info)
+   return file_name_codepage;
+ }
+ 
+-int
+-filename_to_utf16 (const char *fn_in, wchar_t *fn_out)
++/* Keep errno and GetLastError consistent, since our callers use both.
++   In particular, a short conversion buffer is not a nonexistent file.  */
++static int
++filename_conversion_error (DWORD err)
+ {
+-  int result = pMultiByteToWideChar (CP_UTF8, multiByteToWideCharFlags, fn_in,
+-				     -1, fn_out, MAX_PATH);
++  switch (err)
++    {
++    case ERROR_INSUFFICIENT_BUFFER:
++    case ERROR_FILENAME_EXCED_RANGE:
++      errno = ENAMETOOLONG;
++      err = ERROR_FILENAME_EXCED_RANGE;
++      break;
++    case ERROR_NOT_ENOUGH_MEMORY:
++      errno = ENOMEM;
++      break;
++    case ERROR_NO_UNICODE_TRANSLATION:
++      errno = EILSEQ;
++      break;
++    default:
++      errno = EINVAL;
++      break;
++    }
++  SetLastError (err);
++  return -1;
++}
+ 
+-  if (!result)
++int
++filename_to_utf16_n (const char *fn_in, wchar_t *fn_out, int size)
++{
++  if (size <= 0)
++    return filename_conversion_error (ERROR_INSUFFICIENT_BUFFER);
++  if (!pMultiByteToWideChar (CP_UTF8, multiByteToWideCharFlags, fn_in,
++			    -1, fn_out, size))
+     {
+       DWORD err = GetLastError ();
+-
+-      switch (err)
+-	{
+-	case ERROR_INVALID_FLAGS:
+-	case ERROR_INVALID_PARAMETER:
+-	  errno = EINVAL;
+-	  break;
+-	case ERROR_INSUFFICIENT_BUFFER:
+-	case ERROR_NO_UNICODE_TRANSLATION:
+-	default:
+-	  errno = ENOENT;
+-	  break;
+-	}
+-      return -1;
++      fn_out[0] = 0;
++      return filename_conversion_error (err);
+     }
+   return 0;
+ }
+ 
+ int
+-filename_from_utf16 (const wchar_t *fn_in, char *fn_out)
++filename_from_utf16_n (const wchar_t *fn_in, char *fn_out, int size)
+ {
+-  int result = pWideCharToMultiByte (CP_UTF8, 0, fn_in, -1,
+-				     fn_out, MAX_UTF8_PATH, NULL, NULL);
+-
+-  if (!result)
++  if (size <= 0)
++    return filename_conversion_error (ERROR_INSUFFICIENT_BUFFER);
++  if (!pWideCharToMultiByte (CP_UTF8, 0, fn_in, -1,
++			    fn_out, size, NULL, NULL))
+     {
+       DWORD err = GetLastError ();
+-
+-      switch (err)
+-	{
+-	case ERROR_INVALID_FLAGS:
+-	case ERROR_INVALID_PARAMETER:
+-	  errno = EINVAL;
+-	  break;
+-	case ERROR_INSUFFICIENT_BUFFER:
+-	case ERROR_NO_UNICODE_TRANSLATION:
+-	default:
+-	  errno = ENOENT;
+-	  break;
+-	}
+-      return -1;
++      fn_out[0] = 0;
++      return filename_conversion_error (err);
+     }
+   return 0;
+ }
+ 
+ int
+-filename_to_ansi (const char *fn_in, char *fn_out)
++filename_to_ansi_n (const char *fn_in, char *fn_out, int size)
+ {
+-  wchar_t fn_utf16[MAX_PATH];
++  wchar_t fn_utf16[MAX_UTF16_PATH];
+ 
+-  if (filename_to_utf16 (fn_in, fn_utf16) == 0)
++  if (size <= 0)
++    return filename_conversion_error (ERROR_INSUFFICIENT_BUFFER);
++  fn_out[0] = 0;
++  if (filename_to_utf16 (fn_in, fn_utf16) < 0)
++    return -1;
++  if (!pWideCharToMultiByte (codepage_for_filenames (NULL), 0, fn_utf16, -1,
++			    fn_out, size, NULL, NULL))
+     {
+-      int result;
+-      int codepage = codepage_for_filenames (NULL);
++      DWORD err = GetLastError ();
++      fn_out[0] = 0;
++      return filename_conversion_error (err);
++    }
++  return 0;
++}
+ 
+-      result  = pWideCharToMultiByte (codepage, 0, fn_utf16, -1,
+-				      fn_out, MAX_PATH, NULL, NULL);
+-      if (!result)
+-	{
+-	  DWORD err = GetLastError ();
++int
++filename_from_ansi_n (const char *fn_in, char *fn_out, int size)
++{
++  wchar_t fn_utf16[MAX_UTF16_PATH];
+ 
+-	  switch (err)
+-	    {
+-	    case ERROR_INVALID_FLAGS:
+-	    case ERROR_INVALID_PARAMETER:
+-	      errno = EINVAL;
+-	      break;
+-	    case ERROR_INSUFFICIENT_BUFFER:
+-	    case ERROR_NO_UNICODE_TRANSLATION:
+-	    default:
+-	      errno = ENOENT;
+-	      break;
+-	    }
+-	  return -1;
+-	}
+-      return 0;
+-    }
+-  return -1;
++  if (size <= 0)
++    return filename_conversion_error (ERROR_INSUFFICIENT_BUFFER);
++  fn_out[0] = 0;
++  if (!pMultiByteToWideChar (codepage_for_filenames (NULL),
++			    multiByteToWideCharFlags, fn_in, -1,
++			    fn_utf16, ARRAYELTS (fn_utf16)))
++    return filename_conversion_error (GetLastError ());
++  return filename_from_utf16_n (fn_utf16, fn_out, size);
+ }
+ 
++/* Use extended-length paths without depending on LongPathsEnabled in
++   the registry.  Keep short paths unchanged (notably device names and
++   DLL search names).  GetFullPathName resolves relative paths, slashes,
++   and dot components BEFORE the extended namespace disables that
++   processing.  This must not be used for a relative symlink target.  */
+ int
+-filename_from_ansi (const char *fn_in, char *fn_out)
++w32_filename_to_utf16 (const char *name, wchar_t *out, int size)
+ {
+-  wchar_t fn_utf16[MAX_PATH];
+-  int codepage = codepage_for_filenames (NULL);
+-  int result = pMultiByteToWideChar (codepage, multiByteToWideCharFlags, fn_in,
+-				     -1, fn_utf16, MAX_PATH);
++  if (filename_to_utf16_n (name, out, size) < 0)
++    return -1;
++  for (wchar_t *p = out; *p; p++)
++    if (*p == L'/')
++      *p = L'\\';
++
++  size_t len = wcslen (out);
++  if (len >= MAX_UTF16_PATH)
++    goto too_long;
++  if (len < MAX_PATH - 12
++      || (out[0] == L'\\' && out[1] == L'\\'
++	  && (out[2] == L'?' || out[2] == L'.') && out[3] == L'\\'))
++    return 0;
+ 
+-  if (!result)
++  DWORD needed = GetFullPathNameW (out, 0, NULL, NULL);
++  if (!needed)
+     {
+       DWORD err = GetLastError ();
++      out[0] = 0;
++      return filename_conversion_error (err);
++    }
++  if (needed > MAX_UTF16_PATH)
++    goto too_long;
++  wchar_t *full = malloc (needed * sizeof *full);
++  if (!full)
++    {
++      out[0] = 0;
++      return filename_conversion_error (ERROR_NOT_ENOUGH_MEMORY);
++    }
++  DWORD actual = GetFullPathNameW (out, needed, full, NULL);
++  if (!actual || actual >= needed)
++    {
++      DWORD err = actual ? ERROR_FILENAME_EXCED_RANGE : GetLastError ();
++      free (full);
++      out[0] = 0;
++      return filename_conversion_error (err);
++    }
+ 
+-      switch (err)
++  bool unc = full[0] == L'\\' && full[1] == L'\\';
++  size_t extra = unc ? 6 : 4;
++  if (actual + extra >= size || actual + extra >= MAX_UTF16_PATH)
++    {
++      free (full);
++      goto too_long;
++    }
++  wcscpy (out, unc ? L"\\\\?\\UNC\\" : L"\\\\?\\");
++  wcscat (out, full + (unc ? 2 : 0));
++  free (full);
++  return 0;
++
++ too_long:
++  out[0] = 0;
++  return filename_conversion_error (ERROR_FILENAME_EXCED_RANGE);
++}
++
++/* Do not expose a namespace prefix we added to Lisp or to callers that
++   subsequently parse an ordinary DOS or UNC path.  */
++int
++w32_filename_from_utf16 (const wchar_t *name, char *out, int size)
++{
++  if (wcsncmp (name, L"\\\\?\\UNC\\", 8) == 0)
++    {
++      if (size < 3)
+ 	{
+-	case ERROR_INVALID_FLAGS:
+-	case ERROR_INVALID_PARAMETER:
+-	  errno = EINVAL;
+-	  break;
+-	case ERROR_INSUFFICIENT_BUFFER:
+-	case ERROR_NO_UNICODE_TRANSLATION:
+-	default:
+-	  errno = ENOENT;
+-	  break;
++	  if (size > 0)
++	    out[0] = 0;
++	  return filename_conversion_error (ERROR_INSUFFICIENT_BUFFER);
+ 	}
+-      return -1;
++      if (filename_from_utf16_n (name + 8, out + 2, size - 2) < 0)
++	{
++	  out[0] = 0;
++	  return -1;
++	}
++      out[0] = out[1] = '\\';
++      return 0;
+     }
+-  return filename_from_utf16 (fn_utf16, fn_out);
++  if (wcsncmp (name, L"\\\\?\\", 4) == 0
++      && c_isalpha (name[4]) && name[5] == L':')
++    name += 4;
++  return filename_from_utf16_n (name, out, size);
+ }
+ 
+ 
+@@ -1883,9 +1965,7 @@ filename_from_ansi (const char *fn_in, char *fn_out)
+ /* The directory where we started, in UTF-8. */
+ static char startup_dir[MAX_UTF8_PATH];
+ 
+-/* Get the current working directory.  The caller must arrange for CWD
+-   to be allocated with enough space to hold a 260-char directory name
+-   in UTF-8.  IOW, the space should be at least MAX_UTF8_PATH bytes.  */
++/* Get the current working directory.  CWD has MAX_UTF8_PATH bytes.  */
+ static void
+ w32_get_current_directory (char *cwd)
+ {
+@@ -1893,11 +1973,12 @@ w32_get_current_directory (char *cwd)
+      Does it matter anywhere in Emacs?  */
+   if (w32_unicode_filenames)
+     {
+-      wchar_t wstartup_dir[MAX_PATH];
++      wchar_t wstartup_dir[MAX_UTF16_PATH];
++      DWORD len = GetCurrentDirectoryW (ARRAYELTS (wstartup_dir), wstartup_dir);
+ 
+-      if (!GetCurrentDirectoryW (MAX_PATH, wstartup_dir))
++      if (!len || len >= ARRAYELTS (wstartup_dir)
++	  || w32_filename_from_utf16 (wstartup_dir, cwd, MAX_UTF8_PATH) < 0)
+ 	emacs_abort ();
+-      filename_from_utf16 (wstartup_dir, cwd);
+     }
+   else
+     {
+@@ -1905,7 +1986,8 @@ w32_get_current_directory (char *cwd)
+ 
+       if (!GetCurrentDirectoryA (MAX_PATH, astartup_dir))
+ 	emacs_abort ();
+-      filename_from_ansi (astartup_dir, cwd);
++      if (filename_from_ansi_n (astartup_dir, cwd, MAX_UTF8_PATH) < 0)
++	emacs_abort ();
+     }
+ }
+ 
+@@ -2367,8 +2449,10 @@ init_user_info (void)
+ 	emacs_abort ();
+       if (shell == NULL)
+ 	emacs_abort ();
+-      filename_from_utf16 (home, dflt_passwd.pw_dir);
+-      filename_from_utf16 (shell, dflt_passwd.pw_shell);
++      filename_from_utf16_n (home, dflt_passwd.pw_dir,
++			    sizeof dflt_passwd_dir);
++      filename_from_utf16_n (shell, dflt_passwd.pw_shell,
++			    sizeof dflt_passwd_shell);
+     }
+   else
+     {
+@@ -2379,8 +2463,10 @@ init_user_info (void)
+ 	emacs_abort ();
+       if (shell == NULL)
+ 	emacs_abort ();
+-      filename_from_ansi (home, dflt_passwd.pw_dir);
+-      filename_from_ansi (shell, dflt_passwd.pw_shell);
++      filename_from_ansi_n (home, dflt_passwd.pw_dir,
++			   sizeof dflt_passwd_dir);
++      filename_from_ansi_n (shell, dflt_passwd.pw_shell,
++			   sizeof dflt_passwd_shell);
+     }
+ 
+   xfree (buf);
+@@ -2614,10 +2700,12 @@ get_long_basename (char * name, char * buf, int size)
+ 
+   if (w32_unicode_filenames)
+     {
+-      wchar_t fname_utf16[MAX_PATH];
++      wchar_t fname_utf16[MAX_UTF16_PATH];
+       WIN32_FIND_DATAW find_data_wide;
+ 
+-      filename_to_utf16 (name, fname_utf16);
++      if (w32_filename_to_utf16 (name, fname_utf16,
++				 ARRAYELTS (fname_utf16)) < 0)
++	return 0;
+       dir_handle = FindFirstFileW (fname_utf16, &find_data_wide);
+       if (dir_handle != INVALID_HANDLE_VALUE)
+ 	cstatus = filename_from_utf16 (find_data_wide.cFileName, fname_utf8);
+@@ -2627,7 +2715,8 @@ get_long_basename (char * name, char * buf, int size)
+       char fname_ansi[MAX_PATH];
+       WIN32_FIND_DATAA find_data_ansi;
+ 
+-      filename_to_ansi (name, fname_ansi);
++      if (filename_to_ansi (name, fname_ansi) < 0)
++	return 0;
+       /* If the ANSI name includes ? characters, it is not encodable
+ 	 in the ANSI codepage.  In that case, we deliver the question
+ 	 marks to the caller; calling FindFirstFileA in this case
+@@ -2683,6 +2772,11 @@ w32_get_long_filename (const char * name, char * buf, int size)
+ 
+   /* Copy root part verbatim.  */
+   len = parse_root (full, (const char **)&p);
++  if (len >= size)
++    {
++      errno = ENAMETOOLONG;
++      return FALSE;
++    }
+   memcpy (o, full, len);
+   o += len;
+   *o = '\0';
+@@ -2720,21 +2814,31 @@ w32_get_short_filename (const char * name, char * buf, int size)
+ {
+   if (w32_unicode_filenames)
+     {
+-      wchar_t name_utf16[MAX_PATH], short_name[MAX_PATH];
+-      unsigned int retval;
++      wchar_t name_utf16[MAX_UTF16_PATH], short_name[MAX_UTF16_PATH];
+ 
+-      filename_to_utf16 (name, name_utf16);
+-      retval = GetShortPathNameW (name_utf16, short_name, size);
+-      if (retval && retval < size)
+-	filename_from_utf16 (short_name, buf);
+-      return retval;
++      if (w32_filename_to_utf16 (name, name_utf16,
++				 ARRAYELTS (name_utf16)) < 0)
++	return 0;
++      DWORD retval = GetShortPathNameW (name_utf16, short_name,
++				       ARRAYELTS (short_name));
++      if (!retval || retval >= ARRAYELTS (short_name)
++	  || w32_filename_from_utf16 (short_name, buf, size) < 0)
++	return 0;
++      return strlen (buf);
+     }
+   else
+     {
+       char name_ansi[MAX_PATH];
+ 
+-      filename_to_ansi (name, name_ansi);
+-      return GetShortPathNameA (name_ansi, buf, size);
++      if (filename_to_ansi (name, name_ansi) < 0)
++	return 0;
++      DWORD retval = GetShortPathNameA (name_ansi, buf, size);
++      if (retval >= size)
++	{
++	  filename_conversion_error (ERROR_FILENAME_EXCED_RANGE);
++	  return 0;
++	}
++      return retval;
+     }
+ }
+ 
+@@ -2749,25 +2853,41 @@ w32_get_short_filename (const char * name, char * buf, int size)
+ Lisp_Object
+ ansi_encode_filename (Lisp_Object filename)
+ {
+-  Lisp_Object encoded_filename;
+-  char fname[MAX_PATH];
++  char fname[MAX_UTF8_PATH], shortname[MAX_UTF8_PATH];
++  wchar_t native[MAX_UTF16_PATH];
++  const char *name = SSDATA (filename);
+ 
+-  filename_to_ansi (SSDATA (filename), fname);
+-  if (_mbspbrk (fname, "?"))
++  if (filename_to_ansi (name, fname) < 0)
++    report_file_error ("Encoding file name", list1 (filename));
++  const char *check = strncmp (fname, "\\\\?\\", 4) == 0 ? fname + 4 : fname;
++  if (_mbspbrk (check, "?"))
+     {
+-      char shortname[MAX_PATH];
+-
+-      if (w32_get_short_filename (SSDATA (filename), shortname, MAX_PATH))
++      if (!w32_get_short_filename (name, shortname, sizeof shortname))
+ 	{
+-	  dostounix_filename (shortname);
+-	  encoded_filename = build_string (shortname);
++	  errno = EILSEQ;
++	  report_file_error ("Encoding file name", list1 (filename));
+ 	}
+-      else
+-	encoded_filename = build_unibyte_string (fname);
++      name = shortname;
+     }
+-  else
+-    encoded_filename = build_unibyte_string (fname);
+-  return encoded_filename;
++
++  /* UCRT-based consumers can open an extended path through their narrow
++     APIs too.  Keep the prefix when passing a long name to an external
++     library, but transcode it using that library's ANSI codepage.  */
++  if (w32_filename_to_utf16 (name, native, ARRAYELTS (native)) < 0)
++    report_file_error ("Encoding file name", list1 (filename));
++  if (!pWideCharToMultiByte (codepage_for_filenames (NULL), 0, native, -1,
++			    fname, sizeof fname, NULL, NULL))
++    {
++      filename_conversion_error (GetLastError ());
++      report_file_error ("Encoding file name", list1 (filename));
++    }
++  check = strncmp (fname, "\\\\?\\", 4) == 0 ? fname + 4 : fname;
++  if (_mbspbrk (check, "?"))
++    {
++      errno = EILSEQ;
++      report_file_error ("Encoding file name", list1 (filename));
++    }
++  return build_unibyte_string (fname);
+ }
+ 
+ static int
+@@ -3361,8 +3481,8 @@ GetCachedVolumeInformation (char * root_dir)
+ {
+   volume_info_data * info;
+   char default_root[ MAX_UTF8_PATH ];
+-  char  name[MAX_PATH+1];
+-  char  type[MAX_PATH+1];
++  char name[(MAX_PATH + 1) * 4];
++  char type[(MAX_PATH + 1) * 4];
+ 
+   /* NULL for root_dir means use root from current directory.  */
+   if (root_dir == NULL)
+@@ -3418,13 +3538,14 @@ GetCachedVolumeInformation (char * root_dir)
+ 	  wchar_t  name_w[MAX_PATH+1];
+ 	  wchar_t  type_w[MAX_PATH+1];
+ 
+-	  filename_to_utf16 (root_dir, root_w);
++	  if (filename_to_utf16 (root_dir, root_w) < 0)
++	    return NULL;
+ 	  if (!GetVolumeInformationW (root_w,
+-				     name_w, sizeof (name_w),
++				     name_w, ARRAYELTS (name_w),
+ 				     &serialnum,
+ 				     &maxcomp,
+ 				     &flags,
+-				     type_w, sizeof (type_w)))
++				     type_w, ARRAYELTS (type_w)))
+ 	    return NULL;
+ 	  /* Hmm... not really 100% correct, as these 2 are not file
+ 	     names...  */
+@@ -3524,23 +3645,23 @@ is_fat_volume (const char * name, const char ** pPath)
+   return FALSE;
+ }
+ 
+-/* Convert all slashes in a filename to backslashes, and map filename
+-   to a valid 8.3 name if necessary.  The result is a pointer to a
+-   static buffer, so CAVEAT EMPTOR!  */
++/* Convert slashes to backslashes, and map to an 8.3 name if necessary.
++   Return NULL with errno set on failure, otherwise a static buffer.  */
+ const char *
+ map_w32_filename (const char * name, const char ** pPath)
+ {
+   static char shortname[MAX_UTF8_PATH];
+   char * str = shortname;
+   char c;
+-  char * path;
++  char *path = (char *) name;
+   const char * save_name = name;
+ 
+-  if (strlen (name) >= sizeof (shortname))
++  if (strlen (name) >= sizeof shortname)
+     {
+-      /* Return a filename which will cause callers to fail.  */
+-      strcpy (shortname, "?");
+-      return shortname;
++      filename_conversion_error (ERROR_FILENAME_EXCED_RANGE);
++      if (pPath)
++	*pPath = NULL;
++      return NULL;
+     }
+ 
+   if (!fatal_error_in_progress	/* disable fancy processing during crash */
+@@ -3667,6 +3788,10 @@ #define DIR_FIND_DATA_A 2
+ sys_opendir (const char *filename)
+ {
+   DIR *dirp;
++  const char *mapped = map_w32_filename (filename, NULL);
++
++  if (!mapped)
++    return NULL;
+ 
+   /* Opening is done by FindFirstFile.  However, a read is inherent to
+      this operation, so we defer the open until read time.  */
+@@ -3693,8 +3818,7 @@ sys_opendir (const char *filename)
+   dirp->dd_loc = 0;
+   dirp->dd_size = 0;
+ 
+-  strncpy (dir_pathname, map_w32_filename (filename, NULL), MAX_UTF8_PATH - 1);
+-  dir_pathname[MAX_UTF8_PATH - 1] = '\0';
++  strcpy (dir_pathname, mapped);
+   /* Note: We don't support symlinks to file names on FAT volumes.
+      Doing so would mean punishing 99.99% of use cases by resolving
+      all the possible symlinks in FILENAME, recursively.  */
+@@ -3740,11 +3864,7 @@ sys_readdir (DIR *dirp)
+       int ln;
+       bool last_slash = true;
+ 
+-      /* Note: We don't need to worry about dir_pathname being longer
+-	 than MAX_UTF8_PATH, as sys_opendir already took care of that
+-	 when it called map_w32_filename: that function will put a "?"
+-	 in its return value in that case, thus failing all the calls
+-	 below.  */
++      /* sys_opendir already checked the length of dir_pathname.  */
+       strcpy (filename, dir_pathname);
+       ln = strlen (filename);
+       if (!IS_DIRECTORY_SEP (filename[ln - 1]))
+@@ -3755,9 +3875,10 @@ sys_readdir (DIR *dirp)
+ 	 symlink.  */
+       if (w32_unicode_filenames)
+ 	{
+-	  wchar_t fnw[MAX_PATH + 2];
++	  wchar_t fnw[MAX_UTF16_PATH];
+ 
+-	  filename_to_utf16 (filename, fnw);
++	  if (w32_filename_to_utf16 (filename, fnw, ARRAYELTS (fnw) - 2) < 0)
++	    return NULL;
+ 	  if (!last_slash)
+ 	    wcscat (fnw, L"\\");
+ 	  wcscat (fnw, L"*");
+@@ -3767,7 +3888,8 @@ sys_readdir (DIR *dirp)
+ 	{
+ 	  char fna[MAX_PATH + 2];
+ 
+-	  filename_to_ansi (filename, fna);
++	  if (filename_to_ansi_n (filename, fna, ARRAYELTS (fna) - 2) < 0)
++	    return NULL;
+ 	  if (!last_slash)
+ 	    strcat (fna, "\\");
+ 	  strcat (fna, "*");
+@@ -3876,7 +3998,7 @@ sys_readdir (DIR *dirp)
+     }
+ 
+   dir_static.d_namlen = strlen (dir_static.d_name);
+-  dir_static.d_reclen = sizeof (struct dirent) - MAX_UTF8_PATH + 3 +
++  dir_static.d_reclen = sizeof (struct dirent) - sizeof dir_static.d_name + 3 +
+     dir_static.d_namlen - dir_static.d_namlen % 4;
+ 
+   return &dir_static;
+@@ -3889,6 +4011,9 @@ open_unc_volume (const char *path)
+   DWORD result;
+   HANDLE henum;
+ 
++  if (!fn)
++    return INVALID_HANDLE_VALUE;
++
+   if (w32_unicode_filenames)
+     {
+       NETRESOURCEW nrw;
+@@ -3899,7 +4024,8 @@ open_unc_volume (const char *path)
+       nrw.dwDisplayType = RESOURCEDISPLAYTYPE_SERVER;
+       nrw.dwUsage = RESOURCEUSAGE_CONTAINER;
+       nrw.lpLocalName = NULL;
+-      filename_to_utf16 (fn, fnw);
++      if (filename_to_utf16 (fn, fnw) < 0)
++	return INVALID_HANDLE_VALUE;
+       nrw.lpRemoteName = fnw;
+       nrw.lpComment = NULL;
+       nrw.lpProvider = NULL;
+@@ -3917,7 +4043,8 @@ open_unc_volume (const char *path)
+       nra.dwDisplayType = RESOURCEDISPLAYTYPE_SERVER;
+       nra.dwUsage = RESOURCEUSAGE_CONTAINER;
+       nra.lpLocalName = NULL;
+-      filename_to_ansi (fn, fna);
++      if (filename_to_ansi (fn, fna) < 0)
++	return INVALID_HANDLE_VALUE;
+       nra.lpRemoteName = fna;
+       nra.lpComment = NULL;
+       nra.lpProvider = NULL;
+@@ -4119,16 +4246,18 @@ access_attrs (const char *file)
+ 
+   if (w32_unicode_filenames)
+     {
+-      wchar_t file_w[MAX_PATH];
++      wchar_t file_w[MAX_UTF16_PATH];
+ 
+-      filename_to_utf16 (file, file_w);
++      if (w32_filename_to_utf16 (file, file_w, ARRAYELTS (file_w)) < 0)
++	return INVALID_FILE_ATTRIBUTES;
+       attrs = GetFileAttributesW (file_w);
+     }
+   else
+     {
+       char file_a[MAX_PATH];
+ 
+-      filename_to_ansi (file, file_a);
++      if (filename_to_ansi (file, file_a) < 0)
++	return INVALID_FILE_ATTRIBUTES;
+       attrs = GetFileAttributesA (file_a);
+     }
+ 
+@@ -4204,6 +4333,8 @@ faccessat (int dirfd, const char * path, int mode, int flags)
+   /* MSVCRT implementation of 'access' doesn't recognize D_OK, and its
+      newer versions blow up when passed D_OK.  */
+   path = map_w32_filename (path, NULL);
++  if (!path)
++    return -1;
+ 
+   attributes = access_attrs (path);
+   if (attributes == -1)	/* PATH doesn't exist or is inaccessible */
+@@ -4273,18 +4404,20 @@ w32_accessible_directory_p (const char *dirname, ptrdiff_t dirlen)
+       return read_result != NULL || GetLastError () == ERROR_NO_MORE_ITEMS;
+     }
+ 
+-  /* Note: map_w32_filename makes sure DIRNAME is not longer than
+-     MAX_UTF8_PATH.  */
+-  strcpy (pattern, map_w32_filename (dirname, NULL));
++  const char *mapped = map_w32_filename (dirname, NULL);
++  if (!mapped)
++    return 0;
++  strcpy (pattern, mapped);
+ 
+   /* Note: No need to resolve symlinks in FILENAME, because FindFirst
+      opens the directory that is the target of a symlink.  */
+   if (w32_unicode_filenames)
+     {
+-      wchar_t pat_w[MAX_PATH + 2];
++      wchar_t pat_w[MAX_UTF16_PATH];
+       WIN32_FIND_DATAW dfd_w;
+ 
+-      filename_to_utf16 (pattern, pat_w);
++      if (w32_filename_to_utf16 (pattern, pat_w, ARRAYELTS (pat_w) - 2) < 0)
++	return 0;
+       if (!last_slash)
+ 	wcscat (pat_w, L"\\");
+       wcscat (pat_w, L"*");
+@@ -4295,9 +4428,10 @@ w32_accessible_directory_p (const char *dirname, ptrdiff_t dirlen)
+       char pat_a[MAX_PATH + 2];
+       WIN32_FIND_DATAA dfd_a;
+ 
+-      filename_to_ansi (pattern, pat_a);
++      if (filename_to_ansi_n (pattern, pat_a, ARRAYELTS (pat_a) - 2) < 0)
++	return 0;
+       if (!last_slash)
+-	strcpy (pat_a, "\\");
++	strcat (pat_a, "\\");
+       strcat (pat_a, "*");
+       /* In case DIRNAME cannot be expressed in characters from the
+ 	 current ANSI codepage.  */
+@@ -4348,6 +4482,11 @@ sys_access (const char *fname, int mode)
+   char fname_copy[MAX_PATH], *p;
+   DWORD attributes;
+ 
++  if (strlen (fname) >= sizeof fname_copy)
++    {
++      errno = ENAMETOOLONG;
++      return -1;
++    }
+   strcpy (fname_copy, fname);
+   /* Do the equivalent of unixtodos_filename.  */
+   for (p = fname_copy; *p; p = CharNext (p))
+@@ -4401,11 +4540,13 @@ sys_access (const char *fname, int mode)
+ sys_chdir (const char * path)
+ {
+   path = map_w32_filename (path, NULL);
++  if (!path)
++    return -1;
+   if (w32_unicode_filenames)
+     {
+-      wchar_t newdir_w[MAX_PATH];
++      wchar_t newdir_w[MAX_UTF16_PATH];
+ 
+-      if (filename_to_utf16 (path, newdir_w) == 0)
++      if (w32_filename_to_utf16 (path, newdir_w, ARRAYELTS (newdir_w)) == 0)
+ 	return _wchdir (newdir_w);
+       return -1;
+     }
+@@ -4424,16 +4565,18 @@ chmod_worker (const char * path, int mode)
+ {
+   if (w32_unicode_filenames)
+     {
+-      wchar_t path_w[MAX_PATH];
++      wchar_t path_w[MAX_UTF16_PATH];
+ 
+-      filename_to_utf16 (path, path_w);
++      if (w32_filename_to_utf16 (path, path_w, ARRAYELTS (path_w)) < 0)
++	return -1;
+       return _wchmod (path_w, mode);
+     }
+   else
+     {
+       char path_a[MAX_PATH];
+ 
+-      filename_to_ansi (path, path_a);
++      if (filename_to_ansi (path, path_a) < 0)
++	return -1;
+       return _chmod (path_a, mode);
+     }
+ }
+@@ -4441,14 +4584,18 @@ chmod_worker (const char * path, int mode)
+ int
+ sys_chmod (const char * path, int mode)
+ {
+-  path = chase_symlinks (map_w32_filename (path, NULL));
+-  return chmod_worker (path, mode);
++  path = map_w32_filename (path, NULL);
++  if (!path)
++    return -1;
++  return chmod_worker (chase_symlinks (path), mode);
+ }
+ 
+ int
+ lchmod (const char * path, mode_t mode)
+ {
+   path = map_w32_filename (path, NULL);
++  if (!path)
++    return -1;
+   return chmod_worker (path, mode);
+ }
+ 
+@@ -4456,18 +4603,22 @@ lchmod (const char * path, mode_t mode)
+ sys_creat (const char * path, int mode)
+ {
+   path = map_w32_filename (path, NULL);
++  if (!path)
++    return -1;
+   if (w32_unicode_filenames)
+     {
+-      wchar_t path_w[MAX_PATH];
++      wchar_t path_w[MAX_UTF16_PATH];
+ 
+-      filename_to_utf16 (path, path_w);
++      if (w32_filename_to_utf16 (path, path_w, ARRAYELTS (path_w)) < 0)
++	return -1;
+       return _wcreat (path_w, mode);
+     }
+   else
+     {
+       char path_a[MAX_PATH];
+ 
+-      filename_to_ansi (path, path_a);
++      if (filename_to_ansi (path, path_a) < 0)
++	return -1;
+       return _creat (path_a, mode);
+     }
+ }
+@@ -4510,18 +4661,22 @@ sys_fopen (const char * path, const char * mode)
+     else break;
+ 
+   path = map_w32_filename (path, NULL);
++  if (!path)
++    return NULL;
+   if (w32_unicode_filenames)
+     {
+-      wchar_t path_w[MAX_PATH];
++      wchar_t path_w[MAX_UTF16_PATH];
+ 
+-      filename_to_utf16 (path, path_w);
++      if (w32_filename_to_utf16 (path, path_w, ARRAYELTS (path_w)) < 0)
++	return NULL;
+       fd = _wopen (path_w, oflag | _O_NOINHERIT, 0644);
+     }
+   else
+     {
+       char path_a[MAX_PATH];
+ 
+-      filename_to_ansi (path, path_a);
++      if (filename_to_ansi (path, path_a) < 0)
++	return NULL;
+       fd = _open (path_a, oflag | _O_NOINHERIT, 0644);
+     }
+   if (fd < 0)
+@@ -4537,7 +4692,7 @@ sys_link (const char * old, const char * new)
+   HANDLE fileh;
+   int   result = -1;
+   char oldname[MAX_UTF8_PATH], newname[MAX_UTF8_PATH];
+-  wchar_t oldname_w[MAX_PATH];
++  wchar_t oldname_w[MAX_UTF16_PATH];
+   char oldname_a[MAX_PATH];
+ 
+   if (old == NULL || new == NULL)
+@@ -4546,18 +4701,27 @@ sys_link (const char * old, const char * new)
+       return -1;
+     }
+ 
+-  strcpy (oldname, map_w32_filename (old, NULL));
+-  strcpy (newname, map_w32_filename (new, NULL));
++  const char *mapped = map_w32_filename (old, NULL);
++  if (!mapped)
++    return -1;
++  strcpy (oldname, mapped);
++  mapped = map_w32_filename (new, NULL);
++  if (!mapped)
++    return -1;
++  strcpy (newname, mapped);
+ 
+   if (w32_unicode_filenames)
+     {
+-      filename_to_utf16 (oldname, oldname_w);
++      if (w32_filename_to_utf16 (oldname, oldname_w,
++				 ARRAYELTS (oldname_w)) < 0)
++	return -1;
+       fileh = CreateFileW (oldname_w, 0, 0, NULL, OPEN_EXISTING,
+ 			   FILE_FLAG_BACKUP_SEMANTICS, NULL);
+     }
+   else
+     {
+-      filename_to_ansi (oldname, oldname_a);
++      if (filename_to_ansi (oldname, oldname_a) < 0)
++	return -1;
+       fileh = CreateFileA (oldname_a, 0, 0, NULL, OPEN_EXISTING,
+ 			   FILE_FLAG_BACKUP_SEMANTICS, NULL);
+     }
+@@ -4574,14 +4738,17 @@ sys_link (const char * old, const char * new)
+ 
+       struct {
+ 	WIN32_STREAM_ID wid;
+-	WCHAR wbuffer[MAX_PATH];	/* extra space for link name */
++	WCHAR wbuffer[MAX_UTF16_PATH]; /* extra space for link name */
+       } data;
+ 
+       /* We used to pass MB_PRECOMPOSED as the 2nd arg here, but MSDN
+ 	 indicates that flag is unsupported for CP_UTF8, and OTOH says
+ 	 it is the default anyway.  */
+       wlen = pMultiByteToWideChar (CP_UTF8, 0, newname, -1,
+-				   data.wid.cStreamName, MAX_PATH);
++				   data.wid.cStreamName,
++				   ARRAYELTS (data.wbuffer));
++      if (!wlen)
++	filename_conversion_error (GetLastError ());
+       if (wlen > 0)
+ 	{
+ 	  LPVOID context = NULL;
+@@ -4653,19 +4820,23 @@ sys_link (const char * old, const char * new)
+ sys_mkdir (const char * path, mode_t mode)
+ {
+   path = map_w32_filename (path, NULL);
++  if (!path)
++    return -1;
+ 
+   if (w32_unicode_filenames)
+     {
+-      wchar_t path_w[MAX_PATH];
++      wchar_t path_w[MAX_UTF16_PATH];
+ 
+-      filename_to_utf16 (path, path_w);
++      if (w32_filename_to_utf16 (path, path_w, ARRAYELTS (path_w)) < 0)
++	return -1;
+       return _wmkdir (path_w);
+     }
+   else
+     {
+       char path_a[MAX_PATH];
+ 
+-      filename_to_ansi (path, path_a);
++      if (filename_to_ansi (path, path_a) < 0)
++	return -1;
+       return _mkdir (path_a);
+     }
+ }
+@@ -4676,11 +4847,15 @@ sys_open (const char * path, int oflag, int mode)
+   const char* mpath = map_w32_filename (path, NULL);
+   int res = -1;
+ 
++  if (!mpath)
++    return -1;
++
+   if (w32_unicode_filenames)
+     {
+-      wchar_t mpath_w[MAX_PATH];
++      wchar_t mpath_w[MAX_UTF16_PATH];
+ 
+-      filename_to_utf16 (mpath, mpath_w);
++      if (w32_filename_to_utf16 (mpath, mpath_w, ARRAYELTS (mpath_w)) < 0)
++	return -1;
+       /* If possible, try to open file without _O_CREAT, to be able to
+ 	 write to existing hidden and system files.  Force all file
+ 	 handles to be non-inheritable. */
+@@ -4701,7 +4876,8 @@ sys_open (const char * path, int oflag, int mode)
+     {
+       char mpath_a[MAX_PATH];
+ 
+-      filename_to_ansi (mpath, mpath_a);
++      if (filename_to_ansi (mpath, mpath_a) < 0)
++	return -1;
+       if ((oflag & (_O_CREAT | _O_EXCL)) != (_O_CREAT | _O_EXCL))
+ 	res = _open (mpath_a, (oflag & ~_O_CREAT) | _O_NOINHERIT, mode);
+       if (res < 0)
+@@ -4795,7 +4971,10 @@ sys_rename_replace (const char *oldname, const char *newname, BOOL force)
+      So, on Windows 95 we always rename through a temp name, and we make sure
+      the temp name has a long extension to ensure correct renaming.  */
+ 
+-  strcpy (temp, map_w32_filename (oldname, NULL));
++  const char *mapped = map_w32_filename (oldname, NULL);
++  if (!mapped)
++    return -1;
++  strcpy (temp, mapped);
+ 
+   /* 'rename' (which calls MoveFileW) renames the _target_ of the
+      symlink, which is different from Posix behavior and not what we
+@@ -4816,8 +4995,11 @@ sys_rename_replace (const char *oldname, const char *newname, BOOL force)
+       int    i = 0;
+ 
+       oldname = map_w32_filename (oldname, NULL);
+-      filename_to_ansi (oldname, oldname_a);
+-      filename_to_ansi (temp, temp_a);
++      if (!oldname)
++	return -1;
++      if (filename_to_ansi (oldname, oldname_a) < 0
++	  || filename_to_ansi (temp, temp_a) < 0)
++	return -1;
+       if ((o = strrchr (oldname_a, '\\')))
+ 	o++;
+       else
+@@ -4855,16 +5037,23 @@ sys_rename_replace (const char *oldname, const char *newname, BOOL force)
+      all the permutations of shared or subst'd drives, etc.)  */
+ 
+   newname = map_w32_filename (newname, NULL);
++  if (!newname)
++    {
++      result = -1;
++      goto return_result;
++    }
+ 
+   /* volume_info is set indirectly by map_w32_filename.  */
+   newname_dev = volume_info.serialnum;
+ 
+   if (w32_unicode_filenames)
+     {
+-      wchar_t temp_w[MAX_PATH], newname_w[MAX_PATH];
++      wchar_t temp_w[MAX_UTF16_PATH], newname_w[MAX_UTF16_PATH];
+ 
+-      filename_to_utf16 (temp, temp_w);
+-      filename_to_utf16 (newname, newname_w);
++      if (w32_filename_to_utf16 (temp, temp_w, ARRAYELTS (temp_w)) < 0
++	  || w32_filename_to_utf16 (newname, newname_w,
++				    ARRAYELTS (newname_w)) < 0)
++	return -1;
+       result = _wrename (temp_w, newname_w);
+       if (result < 0)
+ 	{
+@@ -4926,9 +5115,12 @@ sys_rename_replace (const char *oldname, const char *newname, BOOL force)
+     {
+       char newname_a[MAX_PATH];
+ 
+-      if (!have_temp_a)
+-	filename_to_ansi (temp, temp_a);
+-      filename_to_ansi (newname, newname_a);
++      if ((!have_temp_a && filename_to_ansi (temp, temp_a) < 0)
++	  || filename_to_ansi (newname, newname_a) < 0)
++	{
++	  result = -1;
++	  goto return_result;
++	}
+       result = rename (temp_a, newname_a);
+       if (result < 0)
+ 	{
+@@ -5007,19 +5199,23 @@ sys_rename (char const *old, char const *new)
+ sys_rmdir (const char * path)
+ {
+   path = map_w32_filename (path, NULL);
++  if (!path)
++    return -1;
+ 
+   if (w32_unicode_filenames)
+     {
+-      wchar_t path_w[MAX_PATH];
++      wchar_t path_w[MAX_UTF16_PATH];
+ 
+-      filename_to_utf16 (path, path_w);
++      if (w32_filename_to_utf16 (path, path_w, ARRAYELTS (path_w)) < 0)
++	return -1;
+       return _wrmdir (path_w);
+     }
+   else
+     {
+       char path_a[MAX_PATH];
+ 
+-      filename_to_ansi (path, path_a);
++      if (filename_to_ansi (path, path_a) < 0)
++	return -1;
+       return _rmdir (path_a);
+     }
+ }
+@@ -5030,12 +5226,15 @@ sys_unlink (const char * path)
+   int rmstatus, e;
+ 
+   path = map_w32_filename (path, NULL);
++  if (!path)
++    return -1;
+ 
+   if (w32_unicode_filenames)
+     {
+-      wchar_t path_w[MAX_PATH];
++      wchar_t path_w[MAX_UTF16_PATH];
+ 
+-      filename_to_utf16 (path, path_w);
++      if (w32_filename_to_utf16 (path, path_w, ARRAYELTS (path_w)) < 0)
++	return -1;
+       /* On Unix, unlink works without write permission.  */
+       _wchmod (path_w, 0666);
+       rmstatus = _wunlink (path_w);
+@@ -5053,7 +5252,8 @@ sys_unlink (const char * path)
+     {
+       char path_a[MAX_PATH];
+ 
+-      filename_to_ansi (path, path_a);
++      if (filename_to_ansi (path, path_a) < 0)
++	return -1;
+       _chmod (path_a, 0666);
+       rmstatus = _unlink (path_a);
+       e = errno;
+@@ -5372,7 +5572,7 @@ stat_worker (const char * path, struct stat * buf, int follow_symlinks)
+   DWORD access_rights = 0;
+   DWORD fattrs = 0, serialnum = 0, fs_high = 0, fs_low = 0, nlinks = 1;
+   FILETIME ctime, atime, wtime;
+-  wchar_t name_w[MAX_PATH];
++  wchar_t name_w[MAX_UTF16_PATH];
+   char name_a[MAX_PATH];
+ 
+   if (path == NULL || buf == NULL)
+@@ -5382,6 +5582,8 @@ stat_worker (const char * path, struct stat * buf, int follow_symlinks)
+     }
+ 
+   save_name = name = (char *) map_w32_filename (path, &path);
++  if (!name)
++    return -1;
+   /* Must be valid filename, no wild cards or other invalid
+      characters.  */
+   if (strpbrk (name, "*?|<>\""))
+@@ -5436,7 +5638,8 @@ stat_worker (const char * path, struct stat * buf, int follow_symlinks)
+ 
+       if (w32_unicode_filenames)
+ 	{
+-	  filename_to_utf16 (name, name_w);
++	  if (w32_filename_to_utf16 (name, name_w, ARRAYELTS (name_w)) < 0)
++	    return -1;
+ 	  fh = CreateFileW (name_w, access_rights, 0, NULL, OPEN_EXISTING,
+ 			   file_flags, NULL);
+ 	  /* If CreateFile fails with READ_CONTROL, try again with
+@@ -5447,7 +5650,8 @@ stat_worker (const char * path, struct stat * buf, int follow_symlinks)
+ 	}
+       else
+ 	{
+-	  filename_to_ansi (name, name_a);
++	  if (filename_to_ansi (name, name_a) < 0)
++	    return -1;
+ 	  fh = CreateFileA (name_a, access_rights, 0, NULL, OPEN_EXISTING,
+ 			   file_flags, NULL);
+ 	  if (fh == INVALID_HANDLE_VALUE && access_rights)
+@@ -5663,13 +5867,16 @@ stat_worker (const char * path, struct stat * buf, int follow_symlinks)
+ 
+ 	      if (w32_unicode_filenames)
+ 		{
+-		  filename_to_utf16 (name, name_w);
++		  if (w32_filename_to_utf16 (name, name_w,
++					    ARRAYELTS (name_w)) < 0)
++		    return -1;
+ 		  fh = FindFirstFileW (name_w, &wfd_w);
+ 		  have_wfd = DIR_FIND_DATA_W;
+ 		}
+ 	      else
+ 		{
+-		  filename_to_ansi (name, name_a);
++		  if (filename_to_ansi (name, name_a) < 0)
++		    return -1;
+ 		  /* If NAME includes characters not representable by
+ 		     the current ANSI codepage, filename_to_ansi
+ 		     usually replaces them with a '?'.  We don't want
+@@ -5989,9 +6196,10 @@ utimensat (int fd, const char *name, const struct timespec times[2], int flag)
+     flags_and_attrs |= FILE_FLAG_OPEN_REPARSE_POINT;
+   if (w32_unicode_filenames)
+     {
+-      wchar_t name_utf16[MAX_PATH];
++      wchar_t name_utf16[MAX_UTF16_PATH];
+ 
+-      if (filename_to_utf16 (name, name_utf16) != 0)
++      if (w32_filename_to_utf16 (name, name_utf16,
++				 ARRAYELTS (name_utf16)) != 0)
+ 	return -1;	/* errno set by filename_to_utf16 */
+ 
+       /* Need write access to set times.  */
+@@ -6128,13 +6336,16 @@ symlink (char const *filename, char const *linkname)
+       errno = ENOENT;
+       return -1;
+     }
+-  if (strlen (filename) > MAX_UTF8_PATH || strlen (linkname) > MAX_UTF8_PATH)
++  if (strlen (filename) >= MAX_UTF8_PATH || strlen (linkname) >= MAX_UTF8_PATH)
+     {
+       errno = ENAMETOOLONG;
+       return -1;
+     }
+ 
+-  strcpy (linkfn, map_w32_filename (linkname, NULL));
++  const char *mapped = map_w32_filename (linkname, NULL);
++  if (!mapped)
++    return -1;
++  strcpy (linkfn, mapped);
+   if ((volume_info.flags & FILE_SUPPORTS_REPARSE_POINTS) == 0)
+     {
+       errno = EPERM;
+@@ -6159,6 +6370,11 @@ symlink (char const *filename, char const *linkname)
+ 	p--;
+       if (p > linkfn)
+ 	strncpy (tem, linkfn, p - linkfn);
++      if (strlen (filename) >= sizeof tem - (p - linkfn))
++	{
++	  errno = ENAMETOOLONG;
++	  return -1;
++	}
+       strcpy (tem + (p - linkfn), filename);
+       dir_access = faccessat (AT_FDCWD, tem, D_OK, AT_EACCESS);
+     }
+@@ -6175,6 +6391,8 @@ symlink (char const *filename, char const *linkname)
+     flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+ 
+   tgtfn = (char *)map_w32_filename (filename, NULL);
++  if (!tgtfn)
++    return -1;
+   if (filename_ends_in_slash)
+     tgtfn[strlen (tgtfn) - 1] = '\0';
+ 
+@@ -6183,7 +6401,7 @@ symlink (char const *filename, char const *linkname)
+     {
+       /* ENOSYS is set by create_symbolic_link, when it detects that
+ 	 the OS doesn't support the CreateSymbolicLink API.  */
+-      if (errno != ENOSYS)
++      if (!errno)
+ 	{
+ 	  DWORD w32err = GetLastError ();
+ 
+@@ -6241,7 +6459,7 @@ symlink (char const *filename, char const *linkname)
+ is_symlink (const char *filename)
+ {
+   DWORD attrs;
+-  wchar_t filename_w[MAX_PATH];
++  wchar_t filename_w[MAX_UTF16_PATH];
+   char filename_a[MAX_PATH];
+   WIN32_FIND_DATAW wfdw;
+   WIN32_FIND_DATAA wfda;
+@@ -6250,12 +6468,15 @@ is_symlink (const char *filename)
+ 
+   if (w32_unicode_filenames)
+     {
+-      filename_to_utf16 (filename, filename_w);
++      if (w32_filename_to_utf16 (filename, filename_w,
++				 ARRAYELTS (filename_w)) < 0)
++	return 0;
+       attrs = GetFileAttributesW (filename_w);
+     }
+   else
+     {
+-      filename_to_ansi (filename, filename_a);
++      if (filename_to_ansi (filename, filename_a) < 0)
++	return 0;
+       attrs = GetFileAttributesA (filename_a);
+     }
+   if (attrs == -1)
+@@ -6283,6 +6504,8 @@ is_symlink (const char *filename)
+   if (w32_unicode_filenames)
+     {
+       fh = FindFirstFileW (filename_w, &wfdw);
++      if (fh == INVALID_HANDLE_VALUE)
++	return 0;
+       attrs_mean_symlink =
+ 	(wfdw.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0
+ 	&& (wfdw.dwReserved0 & IO_REPARSE_TAG_SYMLINK) == IO_REPARSE_TAG_SYMLINK;
+@@ -6298,6 +6521,8 @@ is_symlink (const char *filename)
+   else
+     {
+       fh = FindFirstFileA (filename_a, &wfda);
++      if (fh == INVALID_HANDLE_VALUE)
++	return 0;
+       attrs_mean_symlink =
+ 	(wfda.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0
+ 	&& (wfda.dwReserved0 & IO_REPARSE_TAG_SYMLINK) == IO_REPARSE_TAG_SYMLINK;
+@@ -6325,6 +6550,8 @@ readlink (const char *name, char *buf, size_t buf_size)
+   HANDLE sh;
+   ssize_t retval;
+   char resolved[MAX_UTF8_PATH];
++  wchar_t path_w[MAX_UTF16_PATH];
++  char path_a[MAX_PATH];
+ 
+   if (name == NULL)
+     {
+@@ -6338,12 +6565,8 @@ readlink (const char *name, char *buf, size_t buf_size)
+     }
+ 
+   path = map_w32_filename (name, NULL);
+-
+-  if (strlen (path) > MAX_UTF8_PATH)
+-    {
+-      errno = ENAMETOOLONG;
+-      return -1;
+-    }
++  if (!path)
++    return -1;
+ 
+   errno = 0;
+   if (is_windows_9x () == TRUE
+@@ -6355,6 +6578,13 @@ readlink (const char *name, char *buf, size_t buf_size)
+       return -1;
+     }
+ 
++  /* Convert before acquiring privileges so conversion failure cannot
++     bypass their restoration.  */
++  if (w32_unicode_filenames
++      ? w32_filename_to_utf16 (path, path_w, ARRAYELTS (path_w)) < 0
++      : filename_to_ansi (path, path_a) < 0)
++    return -1;
++
+   /* Done with simple tests, now we're in for some _real_ work.  */
+   if (enable_privilege (SE_BACKUP_NAME, TRUE, &privs))
+     restore_privs = 1;
+@@ -6371,9 +6601,6 @@ readlink (const char *name, char *buf, size_t buf_size)
+      and directory symlinks.  */
+   if (w32_unicode_filenames)
+     {
+-      wchar_t path_w[MAX_PATH];
+-
+-      filename_to_utf16 (path, path_w);
+       sh = CreateFileW (path_w, 0, 0, NULL, OPEN_EXISTING,
+ 			FILE_FLAG_OPEN_REPARSE_POINT
+ 			| FILE_FLAG_BACKUP_SEMANTICS,
+@@ -6381,9 +6608,6 @@ readlink (const char *name, char *buf, size_t buf_size)
+     }
+   else
+     {
+-      char path_a[MAX_PATH];
+-
+-      filename_to_ansi (path, path_a);
+       sh = CreateFileA (path_a, 0, 0, NULL, OPEN_EXISTING,
+ 			FILE_FLAG_OPEN_REPARSE_POINT
+ 			| FILE_FLAG_BACKUP_SEMANTICS,
+@@ -6417,17 +6641,19 @@ readlink (const char *name, char *buf, size_t buf_size)
+ 
+ 	  /* According to MSDN, PrintNameLength does not include the
+ 	     terminating null character.  */
+-	  lwname = alloca ((lwname_len + 1) * sizeof(WCHAR));
++	  lwname = alloca (lwname_len + sizeof (WCHAR));
+ 	  memcpy (lwname, lwname_src, lwname_len);
+ 	  lwname[lwname_len/sizeof(WCHAR)] = 0; /* null-terminate */
+-	  filename_from_utf16 (lwname, resolved);
+-	  dostounix_filename (resolved);
+-	  lname_size = strlen (resolved) + 1;
+-	  if (lname_size <= buf_size)
+-	    size_to_copy = lname_size;
+-	  memcpy (buf, resolved, size_to_copy);
+-	  /* Success!  */
+-	  retval = size_to_copy;
++	  if (w32_filename_from_utf16 (lwname, resolved,
++				       sizeof resolved) == 0)
++	    {
++	      dostounix_filename (resolved);
++	      lname_size = strlen (resolved);
++	      if (lname_size < size_to_copy)
++		size_to_copy = lname_size;
++	      memcpy (buf, resolved, size_to_copy);
++	      retval = size_to_copy;
++	    }
+ 	}
+       CloseHandle (sh);
+     }
+@@ -6507,7 +6733,7 @@ chase_symlinks (const char *file)
+ {
+   static char target[MAX_UTF8_PATH];
+   char link[MAX_UTF8_PATH];
+-  wchar_t target_w[MAX_PATH], link_w[MAX_PATH];
++  wchar_t target_w[MAX_UTF16_PATH], link_w[MAX_UTF16_PATH];
+   char target_a[MAX_PATH], link_a[MAX_PATH];
+   ssize_t res, link_len;
+   int loop_count = 0;
+@@ -6517,21 +6743,25 @@ chase_symlinks (const char *file)
+ 
+   if (w32_unicode_filenames)
+     {
+-      wchar_t file_w[MAX_PATH];
++      wchar_t file_w[MAX_UTF16_PATH];
+ 
+-      filename_to_utf16 (file, file_w);
+-      if (GetFullPathNameW (file_w, MAX_PATH, link_w, NULL) == 0)
++      if (w32_filename_to_utf16 (file, file_w, ARRAYELTS (file_w)) < 0)
++	return (char *)file;
++      DWORD len = GetFullPathNameW (file_w, ARRAYELTS (link_w), link_w, NULL);
++      if (!len || len >= ARRAYELTS (link_w)
++	  || w32_filename_from_utf16 (link_w, link, sizeof link) < 0)
+ 	return (char *)file;
+-      filename_from_utf16 (link_w, link);
+     }
+   else
+     {
+       char file_a[MAX_PATH];
+ 
+-      filename_to_ansi (file, file_a);
+-      if (GetFullPathNameA (file_a, MAX_PATH, link_a, NULL) == 0)
++      if (filename_to_ansi (file, file_a) < 0)
++	return (char *)file;
++      DWORD len = GetFullPathNameA (file_a, sizeof link_a, link_a, NULL);
++      if (!len || len >= sizeof link_a
++	  || filename_from_ansi (link_a, link) < 0)
+ 	return (char *)file;
+-      filename_from_ansi (link_a, link);
+     }
+   link_len = strlen (link);
+ 
+@@ -6541,9 +6771,9 @@ chase_symlinks (const char *file)
+     /* Remove trailing slashes, as we want to resolve the last
+        non-trivial part of the link name.  */
+     while (link_len > 3 && IS_DIRECTORY_SEP (link[link_len-1]))
+-      link[link_len--] = '\0';
++      link[--link_len] = '\0';
+ 
+-    res = readlink (link, target, MAX_UTF8_PATH);
++    res = readlink (link, target, sizeof target - 1);
+     if (res > 0)
+       {
+ 	target[res] = '\0';
+@@ -6556,6 +6786,11 @@ chase_symlinks (const char *file)
+ 
+ 	    while (p > link && !IS_ANY_SEP (p[-1]))
+ 	      p--;
++	    if (strlen (target) >= sizeof link - (p - link))
++	      {
++		errno = ENAMETOOLONG;
++		return (char *) file;
++	      }
+ 	    strcpy (p, target);
+ 	    strcpy (target, link);
+ 	  }
+@@ -6563,17 +6798,23 @@ chase_symlinks (const char *file)
+ 	   in link[] again. */
+ 	if (w32_unicode_filenames)
+ 	  {
+-	    filename_to_utf16 (target, target_w);
+-	    link_len = GetFullPathNameW (target_w, MAX_PATH, link_w, NULL);
+-	    if (link_len > 0)
+-	      filename_from_utf16 (link_w, link);
++	    if (w32_filename_to_utf16 (target, target_w,
++				       ARRAYELTS (target_w)) < 0)
++	      return (char *) file;
++	    link_len = GetFullPathNameW (target_w, ARRAYELTS (link_w),
++					link_w, NULL);
++	    if (link_len <= 0 || link_len >= ARRAYELTS (link_w)
++		|| w32_filename_from_utf16 (link_w, link, sizeof link) < 0)
++	      return (char *) file;
+ 	  }
+ 	else
+ 	  {
+-	    filename_to_ansi (target, target_a);
+-	    link_len = GetFullPathNameA (target_a, MAX_PATH, link_a, NULL);
+-	    if (link_len > 0)
+-	      filename_from_ansi (link_a, link);
++	    if (filename_to_ansi (target, target_a) < 0)
++	      return (char *) file;
++	    link_len = GetFullPathNameA (target_a, sizeof link_a, link_a, NULL);
++	    if (link_len <= 0 || link_len >= sizeof link_a
++		|| filename_from_ansi (link_a, link) < 0)
++	      return (char *) file;
+ 	  }
+ 	link_len = strlen (link);
+       }
+@@ -6682,6 +6923,8 @@ acl_get_file (const char *fname, acl_type_t type)
+       int e = errno;
+ 
+       filename = map_w32_filename (fname, NULL);
++      if (!filename)
++	return NULL;
+       if ((volume_info.flags & FILE_SUPPORTS_REPARSE_POINTS) != 0)
+ 	fname = chase_symlinks (filename);
+       else
+@@ -6766,6 +7009,8 @@ acl_set_file (const char *fname, acl_type_t type, acl_t acl)
+     }
+ 
+   filename = map_w32_filename (fname, NULL);
++  if (!filename)
++    return -1;
+   if ((volume_info.flags & FILE_SUPPORTS_REPARSE_POINTS) != 0)
+     fname = chase_symlinks (filename);
+   else
+@@ -6913,6 +7158,11 @@ careadlinkat (int fd, char const *filename,
+     {
+       char *retval = buffer;
+ 
++      if (link_size >= sizeof linkname)
++	{
++	  errno = ENAMETOOLONG;
++	  return NULL;
++	}
+       linkname[link_size++] = '\0';
+       if (link_size > buffer_size)
+ 	retval = (char *)(alloc ? alloc->allocate : xmalloc) (link_size);
+@@ -6930,7 +7180,7 @@ w32_copy_file (const char *from, const char *to,
+ {
+   acl_t acl = NULL;
+   BOOL copy_result;
+-  wchar_t from_w[MAX_PATH], to_w[MAX_PATH];
++  wchar_t from_w[MAX_UTF16_PATH], to_w[MAX_UTF16_PATH];
+   char from_a[MAX_PATH], to_a[MAX_PATH];
+ 
+   /* We ignore preserve_ownership for now.  */
+@@ -6944,14 +7194,24 @@ w32_copy_file (const char *from, const char *to,
+     }
+   if (w32_unicode_filenames)
+     {
+-      filename_to_utf16 (from, from_w);
+-      filename_to_utf16 (to, to_w);
++      if (w32_filename_to_utf16 (from, from_w, ARRAYELTS (from_w)) < 0
++	  || w32_filename_to_utf16 (to, to_w, ARRAYELTS (to_w)) < 0)
++	{
++	  if (acl)
++	    acl_free (acl);
++	  return -1;
++	}
+       copy_result = CopyFileW (from_w, to_w, FALSE);
+     }
+   else
+     {
+-      filename_to_ansi (from, from_a);
+-      filename_to_ansi (to, to_a);
++      if (filename_to_ansi (from, from_a) < 0
++	  || filename_to_ansi (to, to_a) < 0)
++	{
++	  if (acl)
++	    acl_free (acl);
++	  return -1;
++	}
+       copy_result = CopyFileA (from_a, to_a, FALSE);
+     }
+   if (!copy_result)
+@@ -10399,35 +10659,42 @@ w32_delayed_load (Lisp_Object library_id)
+ 	    dll = ENCODE_FILE (dll);
+ 	    if (w32_unicode_filenames)
+ 	      {
+-		wchar_t name_w[MAX_PATH];
++		wchar_t name_w[MAX_UTF16_PATH];
+ 
+-		filename_to_utf16 (SSDATA (dll), name_w);
++		if (w32_filename_to_utf16 (SSDATA (dll), name_w,
++					  ARRAYELTS (name_w)) < 0)
++		  continue;
+ 		dll_handle = LoadLibraryW (name_w);
+ 		if (dll_handle)
+ 		  {
+ 		    res = GetModuleFileNameW (dll_handle, name_w,
+-					      sizeof (name_w));
+-		    if (res > 0)
+-		      filename_from_utf16 (name_w, name);
++					      ARRAYELTS (name_w));
++		    if (res >= ARRAYELTS (name_w)
++			|| (res > 0
++			    && w32_filename_from_utf16 (name_w, name,
++						       sizeof name) < 0))
++		      res = 0;
+ 		  }
+ 	      }
+ 	    else
+ 	      {
+ 		char name_a[MAX_PATH];
+ 
+-		filename_to_ansi (SSDATA (dll), name_a);
++		if (filename_to_ansi (SSDATA (dll), name_a) < 0)
++		  continue;
+ 		dll_handle = LoadLibraryA (name_a);
+ 		if (dll_handle)
+ 		  {
+ 		    res = GetModuleFileNameA (dll_handle, name_a,
+ 					      sizeof (name_a));
+-		    if (res > 0)
+-		      filename_from_ansi (name_a, name);
++		    if (res >= sizeof name_a
++			|| (res > 0 && filename_from_ansi (name_a, name) < 0))
++		      res = 0;
+ 		  }
+ 	      }
+ 	    if (dll_handle)
+ 	      {
+-		ptrdiff_t len = strlen (name);
++		ptrdiff_t len = res > 0 ? strlen (name) : 0;
+ 		found = Fcons (dll,
+ 			       (res > 0)
+ 			       /* Possibly truncated */
+@@ -10863,21 +11130,32 @@ realpath (const char *file_name, char *resolved_name)
+ 	 we return a canonical file name.  */
+       if (w32_unicode_filenames)
+ 	{
+-	  wchar_t file_w[MAX_PATH], tgt_w[MAX_PATH];
++	  wchar_t file_w[MAX_UTF16_PATH], tgt_w[MAX_UTF16_PATH];
+ 
+-	  filename_to_utf16 (file_name, file_w);
+-	  if (GetFullPathNameW (file_w, MAX_PATH, tgt_w, NULL) == 0)
++	  if (w32_filename_to_utf16 (file_name, file_w,
++				     ARRAYELTS (file_w)) < 0)
++	    return NULL;
++	  DWORD len = GetFullPathNameW (file_w, ARRAYELTS (tgt_w), tgt_w, NULL);
++	  if (!len)
++	    return NULL;
++	  if (len >= ARRAYELTS (tgt_w))
++	    {
++	      filename_conversion_error (ERROR_FILENAME_EXCED_RANGE);
++	      return NULL;
++	    }
++	  if (w32_filename_from_utf16 (tgt_w, target, sizeof target) < 0)
+ 	    return NULL;
+-	  filename_from_utf16 (tgt_w, target);
+ 	}
+       else
+ 	{
+ 	  char file_a[MAX_PATH], tgt_a[MAX_PATH];
+ 
+-	  filename_to_ansi (file_name, file_a);
+-	  if (GetFullPathNameA (file_a, MAX_PATH, tgt_a, NULL) == 0)
++	  if (filename_to_ansi (file_name, file_a) < 0)
++	    return NULL;
++	  DWORD len = GetFullPathNameA (file_a, sizeof tgt_a, tgt_a, NULL);
++	  if (!len || len >= sizeof tgt_a
++	      || filename_from_ansi (tgt_a, target) < 0)
+ 	    return NULL;
+-	  filename_from_ansi (tgt_a, target);
+ 	}
+       tgt = target;
+     }
+diff --git a/src/w32.h b/src/w32.h
+index 90d67d4e1..8c467bbca 100644
+--- a/src/w32.h
++++ b/src/w32.h
+@@ -203,10 +203,26 @@ #define FILE_DONT_CLOSE         0x1000
+ extern void dostounix_filename (register char *);
+ extern void unixtodos_filename (register char *);
+ extern const char *map_w32_filename (const char *, const char **);
+-extern int  filename_from_ansi (const char *, char *);
+-extern int  filename_to_ansi (const char *, char *);
+-extern int  filename_from_utf16 (const wchar_t *, char *);
+-extern int  filename_to_utf16 (const char *, wchar_t *);
++/* The convenience macros require an array, not a pointer.  Pointer
++   destinations must use the _n functions with their actual capacity.
++   These functions only transcode; they do not change path semantics.  */
++extern int filename_from_ansi_n (const char *, char *, int);
++extern int filename_to_ansi_n (const char *, char *, int);
++extern int filename_from_utf16_n (const wchar_t *, char *, int);
++extern int filename_to_utf16_n (const char *, wchar_t *, int);
++#define filename_from_ansi(in, out) \
++  filename_from_ansi_n (in, out, ARRAYELTS (out))
++#define filename_to_ansi(in, out) \
++  filename_to_ansi_n (in, out, ARRAYELTS (out))
++#define filename_from_utf16(in, out) \
++  filename_from_utf16_n (in, out, ARRAYELTS (out))
++#define filename_to_utf16(in, out) \
++  filename_to_utf16_n (in, out, ARRAYELTS (out))
++
++/* Prepare a filesystem path for a Unicode Win32/CRT call, or convert a
++   returned path back to Emacs's ordinary UTF-8 spelling.  */
++extern int w32_filename_to_utf16 (const char *, wchar_t *, int);
++extern int w32_filename_from_utf16 (const wchar_t *, char *, int);
+ extern Lisp_Object w32_get_internal_run_time (void);
+ extern void w32_init_file_name_codepage (void);
+ extern int  codepage_for_filenames (CPINFO *);
+diff --git a/src/w32fns.c b/src/w32fns.c
+index 80ce85bc9..31bab1c67 100644
+--- a/src/w32fns.c
++++ b/src/w32fns.c
+@@ -8344,7 +8344,7 @@ DEFUN ("x-file-dialog", Fx_file_dialog, Sx_file_dialog, 2, 5, 0,
+       DWORD FlagsEx;
+ #endif /* < win2k */
+   } new_file_details_a;
+-  wchar_t filename_buf_w[MAX_PATH + 1], dir_w[MAX_PATH];
++  wchar_t filename_buf_w[MAX_UTF16_PATH], dir_w[MAX_UTF16_PATH];
+   char filename_buf_a[MAX_PATH + 1], dir_a[MAX_PATH];
+   OPENFILENAMEW * file_details_w = &new_file_details_w.details;
+   OPENFILENAMEA * file_details_a = &new_file_details_a.details;
+@@ -8410,14 +8410,9 @@ DEFUN ("x-file-dialog", Fx_file_dialog, Sx_file_dialog, 2, 5, 0,
+       report_file_error ("filename too long", default_filename);
+     if (w32_unicode_filenames)
+       {
+-	filename_to_utf16 (SSDATA (dir), dir_w);
+-	if (filename_to_utf16 (SSDATA (filename), filename_buf_w) != 0)
+-	  {
+-	    /* filename_to_utf16 sets errno to ENOENT when the file
+-	       name is too long or cannot be converted to UTF-16.  */
+-	    if (errno == ENOENT && filename_buf_w[MAX_PATH - 1] != 0)
+-	      report_file_error ("filename too long", default_filename);
+-	  }
++	if (filename_to_utf16 (SSDATA (dir), dir_w) < 0
++	    || filename_to_utf16 (SSDATA (filename), filename_buf_w) < 0)
++	  report_file_error ("Encoding file dialog name", list1 (dir));
+ 	len = pMultiByteToWideChar (CP_UTF8, multiByteToWideCharFlags,
+ 				    SSDATA (prompt), -1, NULL, 0);
+ 	if (len > 32768)
+@@ -8428,14 +8423,9 @@ DEFUN ("x-file-dialog", Fx_file_dialog, Sx_file_dialog, 2, 5, 0,
+       }
+     else
+       {
+-	filename_to_ansi (SSDATA (dir), dir_a);
+-	if (filename_to_ansi (SSDATA (filename), filename_buf_a) != '\0')
+-	  {
+-	    /* filename_to_ansi sets errno to ENOENT when the file
+-	       name is too long or cannot be converted to UTF-16.  */
+-	    if (errno == ENOENT && filename_buf_a[MAX_PATH - 1] != 0)
+-	      report_file_error ("filename too long", default_filename);
+-	  }
++	if (filename_to_ansi (SSDATA (dir), dir_a) < 0
++	    || filename_to_ansi (SSDATA (filename), filename_buf_a) < 0)
++	  report_file_error ("Encoding file dialog name", list1 (dir));
+ 	len = pMultiByteToWideChar (CP_UTF8, multiByteToWideCharFlags,
+ 				    SSDATA (prompt), -1, NULL, 0);
+ 	if (len > 32768)
+@@ -8635,6 +8625,8 @@ DEFUN ("system-move-file-to-trash", Fsystem_move_file_to_trash,
+       encoded_file = ENCODE_FILE (filename);
+ 
+       path = map_w32_filename (SSDATA (encoded_file), NULL);
++      if (!path)
++	report_file_error ("Moving file to trash", list1 (filename));
+ 
+       /* The Unicode version of SHFileOperation is not supported on
+ 	 Windows 9X. */
+@@ -8647,7 +8639,11 @@ DEFUN ("system-move-file-to-trash", Fsystem_move_file_to_trash,
+ 	  wchar_t tmp_path_w[MAX_PATH + 1];
+ 
+ 	  memset (tmp_path_w, 0, sizeof (tmp_path_w));
+-	  filename_to_utf16 (path, tmp_path_w);
++	  /* SHFileOperation does not support extended-length paths.
++	     Fail before changing permissions or invoking the shell; never
++	     fall back to permanently deleting a file meant for trash.  */
++	  if (filename_to_utf16_n (path, tmp_path_w, MAX_PATH) < 0)
++	    report_file_error ("Moving file to trash", list1 (filename));
+ 
+ 	  /* On Windows, write permission is required to delete/move files.  */
+ 	  _wchmod (tmp_path_w, 0666);
+@@ -8671,7 +8667,8 @@ DEFUN ("system-move-file-to-trash", Fsystem_move_file_to_trash,
+ 	  char tmp_path_a[MAX_PATH + 1];
+ 
+ 	  memset (tmp_path_a, 0, sizeof (tmp_path_a));
+-	  filename_to_ansi (path, tmp_path_a);
++	  if (filename_to_ansi_n (path, tmp_path_a, MAX_PATH) < 0)
++	    report_file_error ("Moving file to trash", list1 (filename));
+ 
+ 	  /* If a file cannot be represented in ANSI codepage, don't
+ 	     let them inadvertently delete other files because some
+@@ -8988,12 +8985,13 @@ parameters (e.g., \"printto\" requires the printer address).  Otherwise,
+ 			SSDATA (document), -1, doc_w, doclen);
+   if (use_unicode && pfnShellExecuteExW)
+     {
+-      wchar_t current_dir_w[MAX_PATH];
++      wchar_t current_dir_w[MAX_UTF16_PATH];
+       SHELLEXECUTEINFOW shexinfo_w;
+ 
+       /* Encode the current directory and parameters, and convert
+ 	 operation to UTF-16.  */
+-      filename_to_utf16 (SSDATA (current_dir), current_dir_w);
++      if (filename_to_utf16 (SSDATA (current_dir), current_dir_w) < 0)
++	report_file_error ("Encoding current directory", list1 (current_dir));
+       if (STRINGP (parameters))
+ 	{
+ 	  int len;
+@@ -9051,7 +9049,8 @@ parameters (e.g., \"printto\" requires the printer address).  Otherwise,
+ 
+       doc_a = xmalloc (ldoc_a);
+       pWideCharToMultiByte (codepage, 0, doc_w, -1, doc_a, ldoc_a, NULL, NULL);
+-      filename_to_ansi (SSDATA (current_dir), current_dir_a);
++      if (filename_to_ansi (SSDATA (current_dir), current_dir_a) < 0)
++	report_file_error ("Encoding current directory", list1 (current_dir));
+       if (STRINGP (parameters))
+ 	{
+ 	  parameters = ENCODE_SYSTEM (parameters);
+@@ -9882,7 +9881,7 @@ DEFUN ("file-system-info", Ffile_system_info, Sfile_system_info, 1, 1, 0,
+     /* On Windows, we may need to specify the root directory of the
+        volume holding FILENAME.  */
+     char rootname[MAX_UTF8_PATH];
+-    wchar_t rootname_w[MAX_PATH];
++    wchar_t rootname_w[MAX_UTF16_PATH];
+     char rootname_a[MAX_PATH];
+     char *name = SSDATA (encoded);
+     BOOL result;
+@@ -9911,10 +9910,11 @@ DEFUN ("file-system-info", Ffile_system_info, Sfile_system_info, 1, 1, 0,
+ 	*str = 0;
+       }
+ 
+-    if (w32_unicode_filenames)
+-      filename_to_utf16 (rootname, rootname_w);
+-    else
+-      filename_to_ansi (rootname, rootname_a);
++    if (w32_unicode_filenames
++	? w32_filename_to_utf16 (rootname, rootname_w,
++				 ARRAYELTS (rootname_w)) < 0
++	: filename_to_ansi (rootname, rootname_a) < 0)
++      return Qnil;
+ 
+     if (have_pfn_GetDiskFreeSpaceEx)
+       {
+@@ -10559,13 +10559,10 @@ add_tray_notification (struct frame *f, const char *icon, const char *tip,
+ 	{
+ 	  if (w32_unicode_filenames)
+ 	    {
+-	      wchar_t icon_w[MAX_PATH];
++	      wchar_t icon_w[MAX_UTF16_PATH];
+ 
+-	      if (filename_to_utf16 (icon, icon_w) != 0)
+-		{
+-		  errno = ENOENT;
+-		  return -1;
+-		}
++	      if (w32_filename_to_utf16 (icon, icon_w, ARRAYELTS (icon_w)) < 0)
++		return -1;
+ 	      nidw.hIcon = LoadImageW (NULL, icon_w, IMAGE_ICON, 0, 0,
+ 				       LR_DEFAULTSIZE | LR_LOADFROMFILE);
+ 	    }
+@@ -11055,10 +11052,10 @@ DEFUN ("w32-set-wallpaper", Fw32_set_wallpaper, Sw32_set_wallpaper, 1, 1, 0,
+      image file names that can be encoded by the system codepage.  */
+   if (w32_unicode_filenames && system_parameters_info_w_fn)
+     {
+-      wchar_t fname_w[MAX_PATH];
++      wchar_t fname_w[MAX_UTF16_PATH];
+ 
+-      if (filename_to_utf16 (fname, fname_w) != 0)
+-	err = ERROR_FILE_NOT_FOUND;
++      if (w32_filename_to_utf16 (fname, fname_w, ARRAYELTS (fname_w)) < 0)
++	err = GetLastError ();
+       else
+ 	result = SystemParametersInfoW (SPI_SETDESKWALLPAPER, 0, fname_w,
+ 					SPIF_SENDCHANGE);
+diff --git a/src/w32image.c b/src/w32image.c
+index f0838fd0a..90666781b 100644
+--- a/src/w32image.c
++++ b/src/w32image.c
+@@ -423,8 +423,11 @@ w32_load_image (struct frame *f, struct image *img,
+   if (STRINGP (spec_file))
+     {
+       const char *fn = map_w32_filename (SSDATA (spec_file), NULL);
+-      wchar_t filename_w[MAX_PATH];
+-      filename_to_utf16 (fn, filename_w);
++      if (!fn)
++	return 0;
++      wchar_t filename_w[MAX_UTF16_PATH];
++      if (w32_filename_to_utf16 (fn, filename_w, ARRAYELTS (filename_w)) < 0)
++	return 0;
+       status = GdipCreateBitmapFromFile (filename_w, &pBitmap);
+     }
+   else if (STRINGP (spec_data))
+@@ -623,12 +626,15 @@ w32_gdip_export_frame (HWND hwnd, Lisp_Object file, CLSID *clsid)
+ 						     &bitmap);
+       if (status == Ok)
+ 	{
+-	  wchar_t file_w[MAX_PATH];
++	  wchar_t file_w[MAX_UTF16_PATH];
+ 	  file = ENCODE_FILE (Fexpand_file_name (Fcopy_sequence (file),
+ 						 Qnil));
+ 	  unixtodos_filename (SSDATA (file));
+-	  filename_to_utf16 (SSDATA (file), file_w);
+-	  status = GdipSaveImageToFile (bitmap, file_w, clsid, NULL);
++	  if (w32_filename_to_utf16 (SSDATA (file), file_w,
++				     ARRAYELTS (file_w)) < 0)
++	    status = InvalidParameter;
++	  else
++	    status = GdipSaveImageToFile (bitmap, file_w, clsid, NULL);
+ 	}
+       GdipDisposeImage (bitmap);
+       DeleteObject (capture_bitmap);
+@@ -667,11 +673,13 @@ DEFUN ("w32image-create-thumbnail", Fw32image_create_thumbnail,
+     }
+ 
+   /* Create an image by reading from INPUT_FILE.  */
+-  wchar_t input_file_w[MAX_PATH];
++  wchar_t input_file_w[MAX_UTF16_PATH];
+   input_file
+     = ENCODE_FILE (Fexpand_file_name (Fcopy_sequence (input_file), Qnil));
+   unixtodos_filename (SSDATA (input_file));
+-  filename_to_utf16 (SSDATA (input_file), input_file_w);
++  if (w32_filename_to_utf16 (SSDATA (input_file), input_file_w,
++			     ARRAYELTS (input_file_w)) < 0)
++    return Qnil;
+   GpImage *file_image;
+   GpStatus status = GdipLoadImageFromFile (input_file_w, &file_image);
+ 
+@@ -689,14 +697,17 @@ DEFUN ("w32image-create-thumbnail", Fw32image_create_thumbnail,
+ 	  && w32_gdip_get_encoder_clsid (SSDATA (type), &thumb_clsid) >= 0)
+ 	{
+ 	  /* Save the thumbnail image to a file of specified TYPE.  */
+-	  wchar_t thumb_file_w[MAX_PATH];
++	  wchar_t thumb_file_w[MAX_UTF16_PATH];
+ 	  thumb_file
+ 	    = ENCODE_FILE (Fexpand_file_name (Fcopy_sequence (thumb_file),
+ 					      Qnil));
+ 	  unixtodos_filename (SSDATA (thumb_file));
+-	  filename_to_utf16 (SSDATA (thumb_file), thumb_file_w);
+-	  status = GdipSaveImageToFile (thumb_image, thumb_file_w,
+-					&thumb_clsid, NULL);
++	  if (w32_filename_to_utf16 (SSDATA (thumb_file), thumb_file_w,
++				     ARRAYELTS (thumb_file_w)) < 0)
++	    status = InvalidParameter;
++	  else
++	    status = GdipSaveImageToFile (thumb_image, thumb_file_w,
++					  &thumb_clsid, NULL);
+ 	  GdipDisposeImage (thumb_image);
+ 	}
+       else if (status == Ok)	/* no valid encoder */
+diff --git a/src/w32notify.c b/src/w32notify.c
+index 4c215e475..211e4c00e 100644
+--- a/src/w32notify.c
++++ b/src/w32notify.c
+@@ -380,13 +380,10 @@ add_watch (const char *parent_dir, const char *file, BOOL subdirs, DWORD flags)
+ 
+   if (w32_unicode_filenames)
+     {
+-      wchar_t dir_w[MAX_PATH], file_w[MAX_PATH];
++      wchar_t dir_w[MAX_UTF16_PATH];
+ 
+-      filename_to_utf16 (parent_dir, dir_w);
+-      if (*file)
+-	filename_to_utf16 (file, file_w);
+-      else
+-	file_w[0] = 0;
++      if (w32_filename_to_utf16 (parent_dir, dir_w, ARRAYELTS (dir_w)) < 0)
++	return NULL;
+ 
+       hdir = CreateFileW (dir_w,
+ 			  FILE_LIST_DIRECTORY,
+@@ -399,13 +396,10 @@ add_watch (const char *parent_dir, const char *file, BOOL subdirs, DWORD flags)
+     }
+   else
+     {
+-      char dir_a[MAX_PATH], file_a[MAX_PATH];
++      char dir_a[MAX_PATH];
+ 
+-      filename_to_ansi (parent_dir, dir_a);
+-      if (*file)
+-	filename_to_ansi (file, file_a);
+-      else
+-	file_a[0] = '\0';
++      if (filename_to_ansi (parent_dir, dir_a) < 0)
++	return NULL;
+ 
+       hdir = CreateFileA (dir_a,
+ 			  FILE_LIST_DIRECTORY,
+diff --git a/src/w32proc.c b/src/w32proc.c
+index 49ca0a812..c6e1be9bb 100644
+--- a/src/w32proc.c
++++ b/src/w32proc.c
+@@ -2131,7 +2131,8 @@ create_child (char *exe, char *cmdline, char *env, int is_gui_app,
+   sec_attrs.lpSecurityDescriptor = NULL /* &sec_desc */;
+   sec_attrs.bInheritHandle = FALSE;
+ 
+-  filename_to_ansi (process_dir, dir);
++  if (filename_to_ansi (process_dir, dir) < 0)
++    goto EH_Fail;
+   /* Can't use unixtodos_filename here, since that needs its file name
+      argument encoded in UTF-8.  OTOH, process_dir, which _is_ in
+      UTF-8, points, to the directory computed by our caller, and we
+@@ -2757,7 +2758,8 @@ sys_spawnve (int mode, char *cmdname, char **argv, char **envp)
+      UTF-8.  All the other arguments are encoded by ENCODE_SYSTEM or
+      some such, and are in some ANSI codepage.  We need to have
+      argv[0] encoded in ANSI codepage.  */
+-  filename_to_ansi (cmdname, cmdname_a);
++  if (filename_to_ansi (cmdname, cmdname_a) < 0)
++    return -1;
+   /* We explicitly require that the command's file name be encodable
+      in the current ANSI codepage, because we will be invoking it via
+      the ANSI APIs.  */
+@@ -4091,7 +4093,8 @@ DEFUN ("w32-application-type", Fw32_application_type,
+   encoded_progname = Fcopy_sequence (ENCODE_FILE (program));
+   progname = SSDATA (encoded_progname);
+   unixtodos_filename (progname);
+-  filename_to_ansi (progname, progname_a);
++  if (filename_to_ansi (progname, progname_a) < 0)
++    return Qunknown;
+   /* Reject file names that cannot be encoded in the current ANSI
+      codepage.  */
+   if (_mbspbrk ((unsigned char *)progname_a, (const unsigned char *)"?"))
+diff --git a/src/w32select.c b/src/w32select.c
+index b1f00853e..326f7fb50 100644
+--- a/src/w32select.c
++++ b/src/w32select.c
+@@ -851,10 +851,12 @@ convert_dibv5_to_png (char *data, int size, char *temp_file)
+   /* The bitmap comes upside down.  */
+   GdipImageRotateFlip (bitmap, RotateNoneFlipY);
+ 
+-  WCHAR wide_filename[MAX_PATH];
+-  filename_to_utf16 (temp_file, wide_filename);
+-
+-  status = GdipSaveImageToFile (bitmap, wide_filename, &clsid_png, NULL);
++  WCHAR wide_filename[MAX_UTF16_PATH];
++  if (w32_filename_to_utf16 (temp_file, wide_filename,
++			     ARRAYELTS (wide_filename)) < 0)
++    status = InvalidParameter;
++  else
++    status = GdipSaveImageToFile (bitmap, wide_filename, &clsid_png, NULL);
+   GdipDisposeImage (bitmap);
+   if (status != Ok)
+     return false;
+diff --git a/test/src/w32-long-path-resources/probe.c b/test/src/w32-long-path-resources/probe.c
+new file mode 100644
+index 000000000..9166f8292
+--- /dev/null
++++ b/test/src/w32-long-path-resources/probe.c
+@@ -0,0 +1,196 @@
++/* Independent Win32 fixture for the private Windows long-path tests.
++   Compile as a dynamic module; it never starts a helper process.  */
++#include <windows.h>
++#include <stdlib.h>
++#include <string.h>
++#include <wchar.h>
++#include <emacs-module.h>
++
++int plugin_is_GPL_compatible;
++
++static char *
++string_arg (emacs_env *env, emacs_value value)
++{
++  ptrdiff_t size = 0;
++  if (!env->copy_string_contents (env, value, NULL, &size))
++    return NULL;
++  char *text = malloc (size);
++  if (!text)
++    return NULL;
++  if (!env->copy_string_contents (env, value, text, &size))
++    {
++      free (text);
++      return NULL;
++    }
++  return text;
++}
++
++/* Deliberately independent of Emacs's filename conversion routines.  */
++static wchar_t *
++native_path (const char *text)
++{
++  int size = MultiByteToWideChar (CP_UTF8, MB_ERR_INVALID_CHARS,
++                                text, -1, NULL, 0);
++  if (!size)
++    return NULL;
++  wchar_t *raw = malloc (size * sizeof *raw);
++  if (!raw)
++    return NULL;
++  MultiByteToWideChar (CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, raw, size);
++  for (wchar_t *p = raw; *p; p++)
++    if (*p == L'/')
++      *p = L'\\';
++  DWORD needed = GetFullPathNameW (raw, 0, NULL, NULL);
++  wchar_t *full = needed ? malloc (needed * sizeof *full) : NULL;
++  if (!full || !GetFullPathNameW (raw, needed, full, NULL))
++    {
++      free (raw);
++      free (full);
++      return NULL;
++    }
++  free (raw);
++  BOOL unc = full[0] == L'\\' && full[1] == L'\\';
++  wchar_t *result = malloc ((wcslen (full) + 9) * sizeof *result);
++  if (result)
++    {
++      wcscpy (result, unc ? L"\\\\?\\UNC\\" : L"\\\\?\\");
++      wcscat (result, full + (unc ? 2 : 0));
++    }
++  free (full);
++  return result;
++}
++
++static int
++write_fixture (wchar_t *path)
++{
++  /* Skip the drive root or UNC share when creating parent directories.  */
++  wchar_t *start = path + 7;
++  if (wcsncmp (path, L"\\\\?\\UNC\\", 8) == 0)
++    {
++      start = wcschr (path + 8, L'\\');
++      start = start ? wcschr (start + 1, L'\\') : NULL;
++      if (!start)
++        return -ERROR_INVALID_NAME;
++      start++;
++    }
++  for (wchar_t *p = start; *p; p++)
++    if (*p == L'\\')
++      {
++        *p = 0;
++        BOOL ok = CreateDirectoryW (path, NULL);
++        DWORD error = GetLastError ();
++        *p = L'\\';
++        if (!ok && error != ERROR_ALREADY_EXISTS)
++          return -(int) error;
++      }
++  HANDLE h = CreateFileW (path, GENERIC_WRITE,
++                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
++                         NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
++  if (h == INVALID_HANDLE_VALUE)
++    return -(int) GetLastError ();
++  static const char contents[] = "long-path-probe!\n";
++  DWORD written = 0;
++  BOOL ok = WriteFile (h, contents, sizeof contents - 1, &written, NULL);
++  DWORD error = GetLastError ();
++  CloseHandle (h);
++  return ok ? (int) written : -(int) error;
++}
++
++/* Never follow a reparse point while cleaning a fixture tree.  */
++static BOOL
++remove_tree (const wchar_t *path)
++{
++  DWORD attrs = GetFileAttributesW (path);
++  if (attrs == INVALID_FILE_ATTRIBUTES)
++    return GetLastError () == ERROR_FILE_NOT_FOUND
++      || GetLastError () == ERROR_PATH_NOT_FOUND;
++  if (!(attrs & FILE_ATTRIBUTE_DIRECTORY))
++    {
++      SetFileAttributesW (path, FILE_ATTRIBUTE_NORMAL);
++      return DeleteFileW (path);
++    }
++  if (!(attrs & FILE_ATTRIBUTE_REPARSE_POINT))
++    {
++      size_t len = wcslen (path);
++      wchar_t *child = malloc ((len + MAX_PATH + 3) * sizeof *child);
++      if (!child)
++        return FALSE;
++      wcscpy (child, path);
++      wcscat (child, L"\\*");
++      WIN32_FIND_DATAW data;
++      HANDLE find = FindFirstFileW (child, &data);
++      if (find != INVALID_HANDLE_VALUE)
++        {
++          do
++            {
++              if (wcscmp (data.cFileName, L".") == 0
++                  || wcscmp (data.cFileName, L"..") == 0)
++                continue;
++              child[len] = L'\\';
++              wcscpy (child + len + 1, data.cFileName);
++              if (!remove_tree (child))
++                {
++                  FindClose (find);
++                  free (child);
++                  return FALSE;
++                }
++            }
++          while (FindNextFileW (find, &data));
++          FindClose (find);
++        }
++      free (child);
++    }
++  return RemoveDirectoryW (path);
++}
++
++static emacs_value
++probe (emacs_env *env, ptrdiff_t nargs, emacs_value *args, void *data)
++{
++  char *op = string_arg (env, args[0]);
++  char *text = string_arg (env, args[1]);
++  wchar_t *path = text ? native_path (text) : NULL;
++  intmax_t result = -ERROR_INVALID_PARAMETER;
++  if (op && path)
++    {
++      if (strcmp (op, "write") == 0)
++        result = write_fixture (path);
++      else if (strcmp (op, "units") == 0)
++        result = wcslen (path) - (wcsncmp (path, L"\\\\?\\UNC\\", 8) ? 4 : 6);
++      else if (strcmp (op, "remove") == 0
++               && strstr (text, "emacs-w32-long-path-") != NULL)
++        result = remove_tree (path) ? 0 : -(int) GetLastError ();
++      else if (strcmp (op, "size") == 0)
++        {
++          HANDLE h = CreateFileW (path, 0,
++                                 FILE_SHARE_READ | FILE_SHARE_WRITE
++                                 | FILE_SHARE_DELETE,
++                                 NULL, OPEN_EXISTING, 0, NULL);
++          LARGE_INTEGER size;
++          if (h == INVALID_HANDLE_VALUE)
++            result = -(int) GetLastError ();
++          else
++            {
++              result = GetFileSizeEx (h, &size) ? size.QuadPart
++                : -(int) GetLastError ();
++              CloseHandle (h);
++            }
++        }
++    }
++  free (path);
++  free (text);
++  free (op);
++  return env->make_integer (env, result);
++}
++
++int
++emacs_module_init (struct emacs_runtime *runtime)
++{
++  emacs_env *env = runtime->get_environment (runtime);
++  emacs_value args[] = {
++    env->intern (env, "w32-long-path-tests--native"),
++    env->make_function (env, 2, 2, probe,
++                        "Independent Win32 fixture: OP and absolute PATH.", NULL)
++  };
++  env->funcall (env, env->intern (env, "fset"), 2, args);
++  return 0;
++}
+diff --git a/test/src/w32-long-path-tests.el b/test/src/w32-long-path-tests.el
+new file mode 100644
+index 000000000..63b1761d2
+--- /dev/null
++++ b/test/src/w32-long-path-tests.el
+@@ -0,0 +1,338 @@
++;;; w32-long-path-tests.el --- Private Win32 long-path regressions -*- lexical-binding: t; -*-
++
++;; This downstream test suite exercises actual built-in file operations.
++;; The optional native module provides an independent oracle and cleanup,
++;; including when testing an unpatched Emacs that cannot open the fixtures.
++
++(require 'ert)
++(require 'cl-lib)
++(require 'filenotify)
++
++(defconst w32-long-path-tests--payload "long-path-probe!\n")
++
++(when-let* ((module (getenv "EMACS_W32_LONG_PATH_MODULE")))
++  (module-load module))
++
++(defun w32-long-path-tests--units (path)
++  (/ (length (encode-coding-string path 'utf-16le t)) 2))
++
++(defun w32-long-path-tests--path (root units &optional component)
++  "Return a file under ROOT with exactly UNITS UTF-16 code units."
++  (let ((dir (file-name-as-directory root))
++        (component (or component (make-string 48 ?d))))
++    (while (> (- units (w32-long-path-tests--units dir)) 80)
++      (setq dir (concat dir component "/")))
++    (concat dir (make-string (- units (w32-long-path-tests--units dir) 4) ?f)
++            ".txt")))
++
++(defmacro w32-long-path-tests--with-root (&rest body)
++  (declare (indent 0))
++  `(progn
++     (skip-unless (eq system-type 'windows-nt))
++     (let ((root (make-temp-file "emacs-w32-long-path-" t))
++           (w32-unicode-filenames t))
++       (unwind-protect
++           (progn ,@body)
++         (when root
++           (if (fboundp 'w32-long-path-tests--native)
++               (should (= 0 (w32-long-path-tests--native "remove" root)))
++             (delete-directory root t)))))))
++
++(defun w32-long-path-tests--write (file &optional contents append)
++  (let ((coding-system-for-write 'no-conversion))
++    (write-region (or contents w32-long-path-tests--payload)
++                  nil file append 'silent)))
++
++(defun w32-long-path-tests--read (file)
++  (with-temp-buffer
++    (set-buffer-multibyte nil)
++    (insert-file-contents-literally file)
++    (buffer-string)))
++
++(ert-deftest w32-long-path-tests-native-262 ()
++  "The screenshot's failure, with an independently created 17-byte file."
++  (skip-unless (fboundp 'w32-long-path-tests--native))
++  (w32-long-path-tests--with-root
++    (let ((file (w32-long-path-tests--path root 262)))
++      (should (= 262 (w32-long-path-tests--native "units" file)))
++      (should (= 17 (w32-long-path-tests--native "write" file)))
++      (should (= 17 (w32-long-path-tests--native "size" file)))
++      (should (file-exists-p file))
++      (should (= 17 (file-attribute-size (file-attributes file))))
++      (should (equal w32-long-path-tests--payload
++                     (w32-long-path-tests--read file))))))
++
++(ert-deftest w32-long-path-tests-file-operations ()
++  "Read, write, stat, chmod, times, copy, replace, link and delete."
++  (w32-long-path-tests--with-root
++    (dolist (units '(247 248 255 259 260 261 262 263 1024 4096))
++      (let* ((file (w32-long-path-tests--path root units))
++             (dir (file-name-directory file))
++             (copy (concat file ".copy"))
++             (renamed (concat file ".renamed"))
++             (hard (concat file ".hard")))
++        (ert-info ((format "UTF-16 path length: %s" units))
++          (should (= units (w32-long-path-tests--units file)))
++          (make-directory dir t)
++          (w32-long-path-tests--write file)
++          (should (file-exists-p file))
++          (should (file-readable-p file))
++          (should (file-writable-p file))
++          (should (file-regular-p file))
++          (should (file-directory-p dir))
++          (should (file-accessible-directory-p dir))
++          ;; Exercise stat's by-handle path and both FindFirstFile paths.
++          (dolist (w32-get-true-file-attributes '(t nil local))
++            (should (= 17 (file-attribute-size (file-attributes file)))))
++          (should (equal w32-long-path-tests--payload
++                         (w32-long-path-tests--read file)))
++          (w32-long-path-tests--write file "append\n" t)
++          (should (= 24 (file-attribute-size (file-attributes file))))
++          (let ((time (encode-time '(1 2 3 4 5 2020))))
++            (set-file-times file time)
++            (should (time-equal-p time (file-attribute-modification-time
++                                       (file-attributes file)))))
++          (set-file-modes file #o444)
++          (should-not (file-writable-p file))
++          (set-file-modes file #o644)
++          (copy-file file copy nil t nil t)
++          (should (equal (file-modes file) (file-modes copy)))
++          (should (equal (w32-long-path-tests--read file)
++                         (w32-long-path-tests--read copy)))
++          (w32-long-path-tests--write renamed "replace me")
++          (rename-file copy renamed t)
++          (should-not (file-exists-p copy))
++          (should (equal (w32-long-path-tests--read file)
++                         (w32-long-path-tests--read renamed)))
++          (add-name-to-file file hard)
++          (should (file-equal-p file hard))
++          (delete-file hard)
++          (delete-file renamed)
++          (delete-file file)
++          (should-not (file-exists-p file))
++          ;; Explicit rmdir, not just fixture cleanup.
++          (let ((empty (expand-file-name "empty" dir)))
++            (make-directory empty)
++            (delete-directory empty)
++            (should-not (file-exists-p empty))))))))
++
++(ert-deftest w32-long-path-tests-unicode-and-directory ()
++  "UTF-8 bytes, UTF-16 units and Lisp characters are different counts."
++  (w32-long-path-tests--with-root
++    (let* ((file (w32-long-path-tests--path root 1500
++                                           (concat "目录-😀-" (make-string 24 ?文))))
++           (dir (file-name-directory file))
++           (other (expand-file-name "另一个-😀.txt" dir)))
++      (should (< (length file) (w32-long-path-tests--units file)))
++      (should (> (string-bytes (encode-coding-string file 'utf-8)) 1040))
++      (make-directory dir t)
++      (w32-long-path-tests--write file)
++      (w32-long-path-tests--write other)
++      (let ((default-directory dir))
++        (should (file-exists-p (file-name-nondirectory file)))
++        (should (equal w32-long-path-tests--payload
++                       (w32-long-path-tests--read "./另一个-😀.txt")))
++        (should (member "另一个-😀.txt" (directory-files ".")))
++        (let ((attrs (cdr (assoc "另一个-😀.txt"
++                                 (directory-files-and-attributes ".")))))
++          (should (= 17 (file-attribute-size attrs)))))
++      (should (equal (file-truename file) (file-truename (file-chase-links file))))
++      (should-not (string-match-p (regexp-quote "//?/") (file-truename file)))
++      (let ((newdir (concat (directory-file-name dir) "-renamed")))
++        (rename-file (directory-file-name dir) newdir)
++        (should (file-exists-p (expand-file-name "另一个-😀.txt" newdir)))))))
++
++(ert-deftest w32-long-path-tests-visit-save-backup ()
++  "Normal buffer visiting and saving must work, including backups."
++  (w32-long-path-tests--with-root
++    (dolist (backup-by-copying '(nil t))
++      (let* ((file (w32-long-path-tests--path root 1200))
++             (dir (file-name-directory file))
++             (backup-directory-alist nil)
++             (backup-enable-predicate (lambda (_) t))
++             (make-backup-files t)
++             (version-control 'never)
++             (buffer nil))
++        (make-directory dir t)
++        (w32-long-path-tests--write file)
++        (unwind-protect
++            (with-current-buffer (setq buffer (find-file-noselect file))
++              (should (verify-visited-file-modtime buffer))
++              (goto-char (point-max))
++              (insert "saved\n")
++              (save-buffer)
++              (should-not (buffer-modified-p))
++              (should (verify-visited-file-modtime buffer))
++              (should (equal (w32-long-path-tests--read file)
++                             (concat w32-long-path-tests--payload "saved\n")))
++              (should (equal w32-long-path-tests--payload
++                             (w32-long-path-tests--read (concat file "~")))))
++          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
++
++(ert-deftest w32-long-path-tests-symlinks ()
++  "Keep relative targets relative; support absolute and directory links."
++  (w32-long-path-tests--with-root
++    (let ((probe (expand-file-name "privilege-probe" root)))
++      (condition-case err
++          (progn (make-symbolic-link "missing" probe) (delete-file probe))
++        (file-error
++         (message "Symlink permission probe: %S" err)
++         (ert-skip (format "Symlink permission unavailable: %S" err)))))
++    (let* ((file (w32-long-path-tests--path root 1300))
++           (dir (file-name-directory file))
++           (relative (expand-file-name "relative-link" dir))
++           (absolute (expand-file-name "absolute-link" root))
++           (directory (expand-file-name "directory-link" root))
++           (broken (expand-file-name "broken-link" dir))
++           (base (file-name-nondirectory file)))
++      (make-directory dir t)
++      (w32-long-path-tests--write file)
++      (make-symbolic-link base relative)
++      (should (equal base (file-symlink-p relative)))
++      (should (equal w32-long-path-tests--payload
++                     (w32-long-path-tests--read relative)))
++      (make-symbolic-link file absolute)
++      (should (equal file (file-symlink-p absolute)))
++      (should (file-equal-p file absolute))
++      (should (equal (file-truename file) (file-truename relative)))
++      (make-symbolic-link dir directory)
++      (should (file-directory-p directory))
++      (should (member base (directory-files directory)))
++      (make-symbolic-link "missing" broken)
++      (should-not (file-exists-p broken))
++      (should (equal "missing" (file-symlink-p broken)))
++      (dolist (link (list relative absolute directory broken))
++        (delete-file link))
++      (should (file-exists-p file)))))
++
++(ert-deftest w32-long-path-tests-notifications ()
++  "A native directory watch on a long path must deliver an actual event."
++  (skip-unless (eq system-type 'windows-nt))
++  (skip-unless (featurep 'w32notify))
++  (w32-long-path-tests--with-root
++    (let* ((file (w32-long-path-tests--path root 1400))
++           (dir (file-name-directory file))
++           (events nil)
++           (watch nil))
++      (make-directory dir t)
++      (unwind-protect
++          (progn
++            (setq watch (file-notify-add-watch dir '(change)
++                                               (lambda (event) (push event events))))
++            (should (file-notify-valid-p watch))
++            ;; Give the existing asynchronous watch thread time to arm.
++            (read-event nil nil 0.1)
++            (w32-long-path-tests--write file)
++            (let ((deadline (+ (float-time) 5))
++                  (matching (lambda (event)
++                              (and (memq (nth 1 event) '(created changed))
++                                   (equal (nth 2 event) file)))))
++              ;; Lock-file events can arrive first.  Wait for the actual
++              ;; file event, not merely for any notification at all.
++              (while (and (not (cl-some matching events))
++                          (< (float-time) deadline))
++                (read-event nil nil 0.05))
++              (should (cl-some matching events))))
++        (when watch (file-notify-rm-watch watch))))))
++
++(ert-deftest w32-long-path-tests-module-load ()
++  "LoadLibrary and module filenames must support a DLL in a long path."
++  (skip-unless (and (getenv "EMACS_W32_LONG_PATH_MODULE")
++                    (getenv "EMACS_W32_LONG_PATH_CLEANUP_FILE")))
++  (w32-long-path-tests--with-root
++    (let* ((dll (concat (w32-long-path-tests--path root 1250) ".dll")))
++      (make-directory (file-name-directory dll) t)
++      (copy-file (getenv "EMACS_W32_LONG_PATH_MODULE") dll)
++      (should (module-load dll))
++      ;; Windows retains loaded DLLs until process exit.  Record cleanup
++      ;; immediately, including when a subsequent assertion fails.
++      (write-region (concat root "\n") nil
++                    (getenv "EMACS_W32_LONG_PATH_CLEANUP_FILE") t 'silent)
++      (setq root nil)
++      (should (= 1254 (w32-long-path-tests--native "units" dll)))
++      (should (> (w32-long-path-tests--native "size" dll) 0)))))
++
++(ert-deftest w32-long-path-tests-invalid-and-ansi ()
++  "Over-limit and invalid inputs must fail without touching another file."
++  (w32-long-path-tests--with-root
++    (let* ((safe (expand-file-name "safe.txt" root))
++           (too-long (concat (file-name-as-directory root) (make-string 33000 ?a)))
++           (component (expand-file-name (make-string 256 ?b) root)))
++      (w32-long-path-tests--write safe)
++      (should-not (file-exists-p too-long))
++      ;; Invalid names cannot have lock files; keep this negative test
++      ;; from issuing a 33,000-character unlock warning.
++      (let ((create-lockfiles nil))
++        (should-error (w32-long-path-tests--write too-long) :type 'file-error))
++      (let ((enormous (concat (file-name-as-directory root)
++                              (make-string 140000 ?z))))
++        (should-not (file-exists-p enormous))
++        (should-error (make-directory enormous) :type 'file-error))
++      (should-error (make-directory component) :type 'file-error)
++      (should-error (w32-long-path-tests--write (concat safe "\0suffix"))
++                    :type 'wrong-type-argument)
++      (should (equal w32-long-path-tests--payload (w32-long-path-tests--read safe)))
++      (let* ((file (w32-long-path-tests--path root 1100)))
++        (make-directory (file-name-directory file) t)
++        (w32-long-path-tests--write file)
++        (let ((w32-unicode-filenames nil)
++              (create-lockfiles nil))
++          (should-not (file-exists-p file))
++          (should-error (w32-long-path-tests--write file) :type 'file-error))
++        (should (equal w32-long-path-tests--payload
++                       (w32-long-path-tests--read file)))))))
++
++(ert-deftest w32-long-path-tests-native-compilation ()
++  "Compile from and load an ELN in long paths, including external GCC I/O."
++  (skip-unless (and (native-comp-available-p)
++                    (getenv "EMACS_W32_LONG_PATH_CLEANUP_FILE")))
++  (w32-long-path-tests--with-root
++    (let* ((file (concat (w32-long-path-tests--path root 1150) ".el"))
++           (eln (concat file ".eln"))
++           (native-comp-async-report-warnings-errors 'silent))
++      (make-directory (file-name-directory file) t)
++      (w32-long-path-tests--write
++       file ";;; -*- lexical-binding: t; -*-\n(defun w32-long-path-tests--compiled (x) (+ x 7))\n")
++      ;; Loaded ELNs, like DLLs, remain mapped until process exit.
++      (write-region (concat root "\n") nil
++                    (getenv "EMACS_W32_LONG_PATH_CLEANUP_FILE") t 'silent)
++      (setq root nil)
++      (unwind-protect
++          (progn
++            (should (equal (native-compile file eln) eln))
++            (should (file-exists-p eln))
++            (load eln nil t)
++            (should (native-comp-function-p
++                     (symbol-function 'w32-long-path-tests--compiled)))
++            (should (= 28 (w32-long-path-tests--compiled 21))))
++        (fmakunbound 'w32-long-path-tests--compiled)))))
++
++(ert-deftest w32-long-path-tests-thumbnail ()
++  "GDI+ must read and write actual image files in long paths."
++  (skip-unless (fboundp 'w32image-create-thumbnail))
++  (w32-long-path-tests--with-root
++    (let* ((file (concat (w32-long-path-tests--path root 1350) ".png"))
++           (thumb (concat file ".thumb.png"))
++           (png (base64-decode-string
++                 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jCYkAAAAASUVORK5CYII=")))
++      (make-directory (file-name-directory file) t)
++      (w32-long-path-tests--write file png)
++      (should (w32image-create-thumbnail file thumb "png" 4 4))
++      (should (file-exists-p thumb))
++      (should (string-prefix-p (unibyte-string 137 80 78 71)
++                               (w32-long-path-tests--read thumb))))))
++
++(ert-deftest w32-long-path-tests-trash-fails-safely ()
++  "Legacy SHFileOperation cannot trash long paths; never delete instead."
++  (skip-unless (fboundp 'system-move-file-to-trash))
++  (w32-long-path-tests--with-root
++    (let ((file (w32-long-path-tests--path root 1000)))
++      (make-directory (file-name-directory file) t)
++      (w32-long-path-tests--write file)
++      (let ((modes (file-modes file)))
++        (should-error (system-move-file-to-trash file) :type 'file-error)
++        (should (equal modes (file-modes file))))
++      (should (equal w32-long-path-tests--payload
++                     (w32-long-path-tests--read file))))))
++
++;;; w32-long-path-tests.el ends here

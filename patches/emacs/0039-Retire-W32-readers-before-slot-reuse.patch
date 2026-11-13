@@ -1,0 +1,511 @@
+Date: Fri, 13 Nov 2026 23:55:00 +0800
+Subject: [PATCH] Retire W32 readers before slot reuse and reselect after callbacks
+
+SPDX-FileCopyrightText: 2026 Chen Zhexuan
+SPDX-License-Identifier: GPL-3.0-or-later
+
+A reader can outlive deletion while a pipe writer remains open. Keep its
+context, events and detached descriptor until the thread has exited,
+without blocking the main thread. Transfer descriptor closure before
+requesting retirement, then reclaim it exactly once on the main thread.
+An independent retirement request cannot be overwritten by late I/O.
+
+Preserve downstream 0035's prompt idle completion notifications, but poll
+again after its callback-capable status notification and redisplay. Old
+read/write readiness must not be consumed against replacement owners.
+
+diff --git a/src/process.c b/src/process.c
+index d2a8d9b..c5c86af 100644
+--- a/src/process.c
++++ b/src/process.c
+@@ -5982,6 +5982,10 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
+ 	    got_some_output = status_output;
+ 	  if (do_display)
+ 	    redisplay_preserve_echo_area (113);
++	  /* Filters, sentinels and redisplay can replace descriptors or
++	     recursively consume their data.  Poll again before using either
++	     readiness mask against the current descriptor owners.  */
++	  continue;
+ 	}
+ #endif
+ 
+diff --git a/src/w32.c b/src/w32.c
+index b9d9bbf..3891dd2 100644
+--- a/src/w32.c
++++ b/src/w32.c
+@@ -8961,12 +8961,45 @@ fcntl (int s, int cmd, int options)
+ /* Shadow main io functions: we need to handle pipes and sockets more
+    intelligently.  */
+ 
++/* Stop outstanding socket/serial I/O without reclaiming its handles.
++   The reader can still be returning through descriptor-table accesses.  */
++void
++w32_shutdown_reader (child_process *cp)
++{
++  int fd = cp->deferred_fd;
++  if (fd < 0)
++    return;
++  if (fd_info[fd].flags & FILE_SOCKET)
++    pfn_shutdown (SOCK_HANDLE (fd), 2);
++  else if (fd_info[fd].flags & FILE_SERIAL)
++    CancelIoEx (fd_info[fd].hnd, &cp->ovl_read);
++}
++
++/* Called by the main thread only after the reader has exited.  The CRT
++   descriptor remains allocated until here, so its table entry and socket
++   handle cannot have acquired another owner.  */
++void
++w32_reap_reader_fd (child_process *cp)
++{
++  int fd = cp->deferred_fd;
++  if (fd < 0)
++    return;
++  eassert (fd_info[fd].cp == NULL);
++  eassert (fd_info[fd].flags & FILE_DONT_CLOSE);
++  if (fd_info[fd].flags & FILE_SOCKET)
++    {
++      pfn_closesocket (SOCK_HANDLE (fd));
++      winsock_inuse--;
++    }
++  fd_info[fd].flags = 0;
++  _close (fd);
++  cp->deferred_fd = -1;
++}
++
+ int
+ sys_close (int fd)
+ {
+-  int rc = -1;
+-  bool reader_thread_exited = false;
+-  bool reader_thread_reading = false;
++  bool deferred = false;
+ 
+   if (fd < 0)
+     {
+@@ -8976,53 +9009,43 @@ sys_close (int fd)
+ 
+   if (fd < MAXDESC && fd_info[fd].cp)
+     {
+-      child_process * cp = fd_info[fd].cp;
+-      DWORD thrd_status = STILL_ACTIVE;
+-
+-      /* Thread handle will be NULL if we already called delete_child.  */
+-      if (cp->thrd != NULL
+-	  && GetExitCodeThread (cp->thrd, &thrd_status)
+-	  && thrd_status != STILL_ACTIVE)
+-	reader_thread_exited = true;
+-
+-      if (cp->thrd != NULL && cp->status == STATUS_READ_IN_PROGRESS)
+-	reader_thread_reading = true;
++      child_process *cp = fd_info[fd].cp;
++      bool reader_live = false;
++      if (cp->thrd)
++	{
++	  DWORD result = WaitForSingleObject (cp->thrd, 0);
++	  if (result == WAIT_FAILED)
++	    emacs_abort ();
++	  reader_live = result == WAIT_TIMEOUT;
++	}
+ 
++      /* Transfer the close obligation before waking a retiring reader.
++	 A write-only alias is not used by the reader and can close now.  */
++      if (reader_live && fd == cp->fd)
++	{
++	  eassert (cp->deferred_fd < 0);
++	  cp->deferred_fd = fd;
++	  fd_info[fd].flags |= FILE_DONT_CLOSE;
++	  deferred = true;
++	}
+       fd_info[fd].cp = NULL;
+ 
+       if (CHILD_ACTIVE (cp))
+-        {
+-	  /* if last descriptor to active child_process then cleanup */
++	{
+ 	  int i;
+ 	  for (i = 0; i < MAXDESC; i++)
+-	    {
+-	      if (i == fd)
+-		continue;
+-	      if (fd_info[i].cp == cp)
+-		break;
+-	    }
++	    if (fd_info[i].cp == cp)
++	      break;
+ 	  if (i == MAXDESC)
+ 	    {
+-	      if (fd_info[fd].flags & FILE_SOCKET)
++	      if ((fd_info[fd].flags & FILE_SOCKET) && !deferred)
+ 		{
+-		  if (winsock_lib == NULL) emacs_abort ();
+-
+ 		  pfn_shutdown (SOCK_HANDLE (fd), 2);
+-		  rc = pfn_closesocket (SOCK_HANDLE (fd));
+-
+-		  winsock_inuse--; /* count open sockets */
++		  pfn_closesocket (SOCK_HANDLE (fd));
++		  winsock_inuse--;
+ 		}
+-	      /* If the process handle is NULL, it's either a socket
+-		 or serial connection, or a subprocess that was
+-		 already reaped by reap_subprocess, but whose
+-		 resources were not yet freed, because its output was
+-		 not fully read yet by the time it was reaped.  (This
+-		 usually happens with async subprocesses whose output
+-		 is being read by Emacs.)  Otherwise, this process was
+-		 not reaped yet, so we set its FD to a negative value
+-		 to make sure sys_select will eventually get to
+-		 calling the SIGCHLD handler for it, which will then
+-		 invoke waitpid and reap_subprocess.  */
++	      /* Reaping still owns the process handle.  Once it is gone,
++		 retirement owns the reader and any detached descriptor.  */
+ 	      if (cp->procinfo.hProcess == NULL)
+ 		delete_child (cp);
+ 	      else
+@@ -9030,45 +9053,14 @@ sys_close (int fd)
+ 	    }
+ 	}
+     }
++  else if (fd < MAXDESC && (fd_info[fd].flags & FILE_DONT_CLOSE))
++    return 0;
+ 
+-  /* Note that sockets do not need special treatment here (at least on
+-     NT and Windows 95 using the standard tcp/ip stacks) - it appears that
+-     closesocket is equivalent to CloseHandle, which is to be expected
+-     because socket handles are fully fledged kernel handles. */
++  if (deferred)
++    return 0;
+   if (fd < MAXDESC)
+-    {
+-      if (((fd_info[fd].flags & FILE_DONT_CLOSE) == 0
+-	   /* Don't attempt to close a descriptor while reader thread is
+-              stuck in _sys_read_ahead attempting to read from it, as
+-              that will hang Emacs.  */
+-	   && !(((fd_info[fd].flags & (FILE_PIPE | FILE_READ))
+-		 == (FILE_PIPE | FILE_READ))
+-		&& reader_thread_reading))
+-	  /* If the reader thread already exited, close the descriptor,
+-	     since otherwise no one will close it, and we will be
+-	     leaking descriptors.  */
+-	  || reader_thread_exited)
+-	{
+-	  fd_info[fd].flags = 0;
+-	  rc = _close (fd);
+-	}
+-      else
+-	{
+-	  /* We don't close here descriptors open by pipe processes
+-	     for reading from the pipe when the reader thread might
+-	     still be running, since that thread might be stuck in
+-	     _sys_read_ahead, and then we will hang here.  If the
+-	     reader thread exits normally, it will close the
+-	     descriptor; otherwise we will leave a zombie thread
+-	     hanging around.  */
+-	  rc = 0;
+-	  /* Leave the flag set for the reader thread to close the
+-	     descriptor.  */
+-	  fd_info[fd].flags = FILE_DONT_CLOSE;
+-	}
+-    }
+-
+-  return rc;
++    fd_info[fd].flags = 0;
++  return _close (fd);
+ }
+ 
+ int
+@@ -9229,7 +9221,7 @@ _sys_read_ahead (int fd)
+   else if (fd_info[fd].flags & FILE_SERIAL)
+     {
+       HANDLE hnd = fd_info[fd].hnd;
+-      OVERLAPPED *ovl = &fd_info[fd].cp->ovl_read;
++      OVERLAPPED *ovl = &cp->ovl_read;
+       COMMTIMEOUTS ct;
+ 
+       /* Configure timeouts for blocking read.  */
+@@ -9254,6 +9246,8 @@ _sys_read_ahead (int fd)
+ 	      cp->status = STATUS_READ_ERROR;
+ 	      return STATUS_READ_ERROR;
+ 	    }
++	  if (CHILD_RETIRED (cp))
++	    CancelIoEx (hnd, ovl);
+ 	  if (!GetOverlappedResult (hnd, ovl, (DWORD*) &rc, TRUE))
+ 	    {
+ 	      cp->status = STATUS_READ_ERROR;
+@@ -9309,9 +9303,8 @@ _sys_wait_accept (int fd)
+       do {
+ 	rc = WaitForSingleObject (hEv, 500);
+ 	Sleep (5);
+-      } while (rc == WAIT_TIMEOUT
+-	       && cp->status != STATUS_READ_ERROR
+-	       && cp->char_avail);
++      } while (rc == WAIT_TIMEOUT && !CHILD_RETIRED (cp)
++	       && cp->status != STATUS_READ_ERROR);
+       pfn_WSAEventSelect (SOCK_HANDLE (fd), NULL, 0);
+       if (rc == WAIT_OBJECT_0)
+ 	cp->status = STATUS_READ_SUCCEEDED;
+@@ -9344,10 +9337,9 @@ _sys_wait_connect (int fd)
+       do {
+ 	rc = WaitForSingleObject (hEv, 500);
+ 	Sleep (5);
+-      } while (rc == WAIT_TIMEOUT
+-	       && cp->status != STATUS_READ_ERROR
+-	       && cp->char_avail);
+-      if (rc == WAIT_OBJECT_0)
++      } while (rc == WAIT_TIMEOUT && !CHILD_RETIRED (cp)
++	       && cp->status != STATUS_READ_ERROR);
++      if (rc == WAIT_OBJECT_0 && !CHILD_RETIRED (cp))
+ 	{
+ 	  /* We've got an event, but it could be a successful
+ 	     connection, or it could be a failure.  Find out
+diff --git a/src/w32.h b/src/w32.h
+index 8c467bb..5e14ef5 100644
+--- a/src/w32.h
++++ b/src/w32.h
+@@ -101,6 +101,12 @@ #define SELECT_TYPE fd_set
+   /* Status of subprocess/connection and of reading its output.  For
+      values, see the enumeration above.  */
+   volatile int        status;
++  /* Retirement is independent of STATUS: outstanding I/O can still
++     finish after its owner has requested exit.  */
++  volatile LONG       retired;
++  /* Detached descriptor retained until reader exit; -1 if none.  Only
++     the main thread transfers and fulfils this close obligation.  */
++  int                 deferred_fd;
+   /* Used to store errno value of failed async 'connect' calls.  */
+   volatile int        errcode;
+   /* Holds a single character read by _sys_read_ahead, when a
+@@ -114,7 +120,8 @@ #define SELECT_TYPE fd_set
+ 
+ #define MAXDESC FD_SETSIZE
+ #define MAX_CHILDREN  MAXDESC/2
+-#define CHILD_ACTIVE(cp) ((cp)->char_avail != NULL)
++#define CHILD_ACTIVE(cp) ((cp)->char_avail != NULL && !(cp)->retired)
++#define CHILD_RETIRED(cp) (InterlockedCompareExchange (&(cp)->retired, 0, 0) != 0)
+ 
+ /* parallel array of private info on file handles */
+ typedef struct
+@@ -143,6 +150,8 @@ #define FILE_DONT_CLOSE         0x1000
+ 
+ extern child_process * new_child (void);
+ extern void delete_child (child_process *cp);
++extern void w32_shutdown_reader (child_process *cp);
++extern void w32_reap_reader_fd (child_process *cp);
+ 
+ /* ------------------------------------------------------------------------- */
+ 
+diff --git a/src/w32proc.c b/src/w32proc.c
+index c6e1be9..ad64707 100644
+--- a/src/w32proc.c
++++ b/src/w32proc.c
+@@ -1800,16 +1800,58 @@ #define _P_NOWAIT 1
+ 
+ static DWORD WINAPI reader_thread (void *arg);
+ 
++/* Reclaim reader resources only after the last use of its context and
++   events.  A pipe writer can outlive its process, so never wait here.  */
++static bool
++reap_child_reader (child_process *cp)
++{
++  if (cp->thrd)
++    {
++      DWORD result = WaitForSingleObject (cp->thrd, 0);
++      if (result == WAIT_TIMEOUT)
++	return false;
++      if (result != WAIT_OBJECT_0)
++	emacs_abort ();
++      CloseHandle (cp->thrd);
++      cp->thrd = NULL;
++    }
++  w32_reap_reader_fd (cp);
++  if (cp->char_avail)
++    {
++      CloseHandle (cp->char_avail);
++      cp->char_avail = NULL;
++    }
++  if (cp->char_consumed)
++    {
++      CloseHandle (cp->char_consumed);
++      cp->char_consumed = NULL;
++    }
++  InterlockedExchange (&cp->retired, 0);
++  return true;
++}
++
+ /* Find an unused process slot.  */
+ child_process *
+ new_child (void)
+ {
+-  child_process *cp;
++  child_process *cp, *available = NULL;
+   DWORD id;
+ 
++  /* Reclaim every completed retiree in this existing table traversal,
++     even when a higher-numbered slot is immediately reusable.  */
+   for (cp = child_procs + (child_proc_count-1); cp >= child_procs; cp--)
+-    if (!CHILD_ACTIVE (cp) && cp->procinfo.hProcess == NULL)
++    {
++      if (CHILD_RETIRED (cp))
++	reap_child_reader (cp);
++      if (!available && !CHILD_ACTIVE (cp)
++	  && cp->procinfo.hProcess == NULL && !cp->thrd)
++	available = cp;
++    }
++  if (available)
++    {
++      cp = available;
+       goto Initialize;
++    }
+   if (child_proc_count == MAX_CHILDREN)
+     {
+       int i = 0;
+@@ -1817,7 +1859,7 @@ new_child (void)
+ 
+       DebPrint (("new_child: No vacant slots, looking for dead processes\n"));
+       for (cp = child_procs + (child_proc_count-1); cp >= child_procs; cp--)
+-	if (!CHILD_ACTIVE (cp) && cp->procinfo.hProcess)
++	if (!CHILD_ACTIVE (cp) && cp->procinfo.hProcess && !cp->thrd)
+ 	  {
+ 	    DWORD status = 0;
+ 
+@@ -1865,6 +1907,7 @@ new_child (void)
+     CloseHandle (cp->procinfo.hThread);
+   memset (cp, 0, sizeof (*cp));
+   cp->fd = -1;
++  cp->deferred_fd = -1;
+   cp->pid = -1;
+   cp->procinfo.hProcess = NULL;
+   cp->status = STATUS_READ_ERROR;
+@@ -1911,52 +1954,25 @@ delete_child (child_process *cp)
+     if (fd_info[i].cp == cp)
+       emacs_abort ();
+ 
+-  if (!CHILD_ACTIVE (cp) && cp->procinfo.hProcess == NULL)
++  if (!CHILD_ACTIVE (cp) && cp->procinfo.hProcess == NULL && !cp->thrd)
+     return;
+ 
+-  /* reap thread if necessary */
+-  if (cp->thrd)
+-    {
+-      DWORD rc;
+-
+-      if (GetExitCodeThread (cp->thrd, &rc) && rc == STILL_ACTIVE)
+-        {
+-	  /* let the thread exit cleanly if possible */
+-	  cp->status = STATUS_READ_ERROR;
+-	  SetEvent (cp->char_consumed);
+-#if 0
+-          /* We used to forcibly terminate the thread here, but it
+-             is normally unnecessary, and in abnormal cases, the worst that
+-             will happen is we have an extra idle thread hanging around
+-             waiting for the zombie process.  */
+-	  if (WaitForSingleObject (cp->thrd, 1000) != WAIT_OBJECT_0)
+-	    {
+-	      DebPrint (("delete_child.WaitForSingleObject (thread) failed "
+-			 "with %lu for fd %ld\n", GetLastError (), cp->fd));
+-	      TerminateThread (cp->thrd, 0);
+-	    }
+-#endif
+-	}
+-      CloseHandle (cp->thrd);
+-      cp->thrd = NULL;
+-    }
+-  if (cp->char_avail)
+-    {
+-      CloseHandle (cp->char_avail);
+-      cp->char_avail = NULL;
+-    }
++  /* Keep the context, events and thread handle until exit is observed.
++     Closing a thread handle neither stops it nor releases its references.  */
++  InterlockedExchange (&cp->retired, 1);
++  cp->status = STATUS_READ_ERROR;
++  w32_shutdown_reader (cp);
+   if (cp->char_consumed)
+-    {
+-      CloseHandle (cp->char_consumed);
+-      cp->char_consumed = NULL;
+-    }
++    SetEvent (cp->char_consumed);
++  reap_child_reader (cp);
+ 
+   /* update child_proc_count (highest numbered slot in use plus one) */
+   if (cp == child_procs + child_proc_count - 1)
+     {
+       for (i = child_proc_count-1; i >= 0; i--)
+ 	if (CHILD_ACTIVE (&child_procs[i])
+-	    || child_procs[i].procinfo.hProcess != NULL)
++	    || child_procs[i].procinfo.hProcess != NULL
++	    || child_procs[i].thrd != NULL)
+ 	  {
+ 	    child_proc_count = i + 1;
+ 	    break;
+@@ -2007,14 +2023,15 @@ reader_thread (void *arg)
+ 
+   /* We have to wait for the go-ahead before we can start */
+   if (cp == NULL
+-      || WaitForSingleObject (cp->char_consumed, INFINITE) != WAIT_OBJECT_0
+-      || cp->fd < 0)
++      || WaitForSingleObject (cp->char_consumed, INFINITE) != WAIT_OBJECT_0)
+     return 1;
+ 
+   for (;;)
+     {
+       int rc;
+ 
++      if (CHILD_RETIRED (cp) || cp->fd < 0)
++	break;
+       fd = cp->fd;
+       if (fd >= 0 && (fd_info[fd].flags & FILE_CONNECT) != 0)
+ 	rc = _sys_wait_connect (fd);
+@@ -2025,7 +2042,7 @@ reader_thread (void *arg)
+ 
+       /* Don't bother waiting for the event if we already have been
+ 	 told to exit by delete_child.  */
+-      if (cp->status == STATUS_READ_ERROR || !cp->char_avail)
++      if (CHILD_RETIRED (cp) || cp->status == STATUS_READ_ERROR)
+ 	break;
+ 
+       /* The name char_avail is a misnomer - it really just means the
+@@ -2047,7 +2064,7 @@ reader_thread (void *arg)
+ 
+       /* Don't bother waiting for the acknowledge if we already have
+ 	 been told to exit by delete_child.  */
+-      if (cp->status == STATUS_READ_ERROR || !cp->char_consumed)
++      if (CHILD_RETIRED (cp) || cp->status == STATUS_READ_ERROR)
+ 	break;
+ 
+       /* Wait until our input is acknowledged before reading again */
+@@ -2057,29 +2074,12 @@ reader_thread (void *arg)
+ 		     "%lu for fd %ld\n", GetLastError (), cp->fd));
+ 	  break;
+         }
+-      /* delete_child sets status to STATUS_READ_ERROR when it wants
+-	 us to exit.  */
+-      if (cp->status == STATUS_READ_ERROR)
++      /* Retirement cannot be overwritten by a late I/O result.  */
++      if (CHILD_RETIRED (cp) || cp->status == STATUS_READ_ERROR)
+ 	break;
+     }
+-  /* If this thread was reading from a pipe process, close the
+-     descriptor used for reading, as sys_close doesn't in that case.  */
+-  if ((fd_info[fd].flags & FILE_DONT_CLOSE) == FILE_DONT_CLOSE)
+-    {
+-      int i;
+-      /* If w32.c:sys_close is still processing this descriptor, wait
+-	 for a while for it to finish.  */
+-      for (i = 0; i < 5; i++)
+-	{
+-	  if (fd_info[fd].flags == FILE_DONT_CLOSE)
+-	    {
+-	      fd_info[fd].flags = 0;
+-	      _close (fd);
+-	      break;
+-	    }
+-	  Sleep (5);
+-	}
+-    }
++  /* The main thread reclaims detached descriptors after observing this
++     thread's exit.  Do not access a descriptor table during retirement.  */
+   return 0;
+ }
+ 

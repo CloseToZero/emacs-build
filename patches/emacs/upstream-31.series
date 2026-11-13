@@ -27,3 +27,4 @@
 0036-Dispatch-W32-thread-timer-callbacks.patch
 0037-Support-extended-length-W32-file-paths.patch
 0038-Stop-retrying-unscrollable-display-prefix.patch
+0039-Retire-W32-readers-before-slot-reuse.patch

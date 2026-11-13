@@ -14,7 +14,8 @@ Run `bash scripts/tests/test-patches.sh` to check selection, order, failure prop
 
 ## Retained behavior
 
-The series contains 25 unchanged existing payloads plus downstream patch 0038, in dependency order.
+The series contains 25 unchanged existing payloads plus downstream patches 0038 and 0039,
+in dependency order.
 In particular, it retains:
 
 - 0033 and 0034: title-bar visibility control and captionless maximized-window work-area handling.
@@ -29,6 +30,10 @@ In particular, it retains:
   existing forced-visibility phase has ended. This fixes an unscrollable multiline display prefix
   without disabling conservative scrolling or changing image/Agent-specific behavior. See the
   [graphical redisplay checks](../scripts/tests/README-redisplay.md).
+- 0039: reserve retired Windows readers and their descriptors until actual thread exit, with
+  nonblocking reclamation and independent retirement. Reselect after 0035's callbacks instead
+  of consuming stale readiness, while retaining its prompt idle-completion behavior. See the
+  [pipe lifecycle checks](../scripts/tests/README-w32-pipes.md).
 
 The long-path and timer contracts and tests are documented in
 [`README-w32-long-path.md`](../scripts/tests/README-w32-long-path.md) and
@@ -40,7 +45,7 @@ for a new binary. Validate the actual newly packaged and relocated executable an
 The previous builder ignored patch failures. Sequential index-only checks against its recorded
 base, `769bd89281062bcf19fcb7985051b06fb0c0849b`, found that these 11 patches did not apply there
 either. The selected existing patches do not silently lose behavior present in that recorded build;
-0038 is an additional downstream fix.
+0038 and 0039 are additional downstream fixes.
 
 | Patches | Scope and disposition |
 | --- | --- |

@@ -102,6 +102,10 @@ See [the audited selection](patches/upstream-31.md) for its base revision, retai
 and intentionally unselected fork patches. Keep source checkouts and package outputs separate
 from an installed editor, and verify the actual source revision before building.
 
+The [Windows pipe lifecycle checks](scripts/tests/README-w32-pipes.md) cover reader retirement,
+callback-driven descriptor replacement and prompt process completion. Run them against both the
+new build and its packaged extraction when changing downstream process patches.
+
 ### An example
 
 Assume you invoke this script as follows

@@ -49,7 +49,8 @@ function clone_repo ()
         fi
     else
         echo Cloning Emacs repository $repo.
-        git clone --filter=tree:0 "$repo" "$source_dir" --no-checkout && \
+        git clone -c core.autocrlf=false -c core.eol=lf --filter=tree:0 \
+            "$repo" "$source_dir" --no-checkout && \
             cd "$source_dir" && git config pull.rebase false && git checkout "$branch"
         error=$?
         if test $? != 0; then
@@ -68,22 +69,51 @@ function clone_repo ()
 function apply_patches ()
 {
     local source_dir="$1"
+    local series="${2:-}"
     local patches_dir="$emacs_build_root/patches/emacs"
-    pushd . >/dev/null
-    local error
-    if test -d "$source_dir"; then
-        echo Applying patches in $patches_dir
-        cd $source_dir
+    local patch
+    local -a patches=()
+
+    if test ! -d "$source_dir"; then
+        errcho "Patch source directory is missing: $source_dir"
+        return 1
+    fi
+    if test -n "$series"; then
+        if [[ "$series" != /* && "$series" != ?:/* ]]; then
+            series="$emacs_build_root/$series"
+        fi
+        if test ! -f "$series"; then
+            errcho "Patch series is missing: $series"
+            return 1
+        fi
+        if while IFS= read -r patch || test -n "$patch"; do
+            patch="${patch%$'\r'}"
+            case "$patch" in ''|\#*) continue;; esac
+            patches+=("$patches_dir/$patch")
+        done < "$series"; then
+            echo "Patch series: $series"
+        else
+            errcho "Patch series could not be opened: $series"
+            return 1
+        fi
+    else
         for patch in "$patches_dir"/*.patch; do
-            test -e "$patch" || continue
-            sed 's/\r$//' "$patch" |
-                git apply --ignore-space-change --ignore-whitespace - || true
+            test -e "$patch" && patches+=("$patch")
         done
-        error=$?
     fi
 
-    popd >/dev/null
-    return $error
+    for patch in "${patches[@]}"; do
+        if test ! -f "$patch"; then
+            errcho "Selected patch is missing: $patch"
+            return 1
+        fi
+        echo "Applying $patch"
+        if ! (set -o pipefail; sed 's/\r$//' "$patch" |
+              git -C "$source_dir" apply --ignore-space-change --ignore-whitespace -); then
+            errcho "Patch failed; build preparation stopped: $patch"
+            return 1
+        fi
+    done
 }
 
 function list_filter () {

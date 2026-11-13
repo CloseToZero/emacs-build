@@ -22,6 +22,10 @@ Actions:
 
 Build options:
    --branch b    Select Emacs branch (or tag) 'b' for the remaining operations.
+   --patch-series file
+                 Apply only the listed patch filenames, in order, during --clone.
+                 A failed or missing selected patch stops preparation.
+   --no-patches  Do not apply patches during --clone.
    --compress    Ship Emacs with gunzip and compress documentation and Emacs
                  script files.
    --debug       Output all statements run by the script.

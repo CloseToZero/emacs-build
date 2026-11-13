@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Chen Zhexuan
+# SPDX-License-Identifier: MIT
+# Upstream emacs-31, x64 UCRT64, MPS disabled. See ../upstream-31.md.
+0001-.el.elc-ignore-byte-compile-errors.patch
+0004-Fix-tab-bar-highlight-after-clearing-mouse-face.patch
+0007-ci-auto-sync.patch
+0008-makefile-dont-build-leim.patch
+0009-w32-win-dont-load-dnd-menu-bar-scroll-bar-unneccesar.patch
+0010-package-quickstart-refresh-dont-require-info-delay-l.patch
+0011-Stop-using-legacy-ffat-lto-objects-option-in-LTO-bui.patch
+0012-Fix-empty-minor-mode-doc-string-causes-error.patch
+0013-setup_w32_kbhook-ignore-it.patch
+0014-clang-fixes.patch
+0015-aarch64-fixes.patch
+0016-Ensure-sys_jmp_buf-structures-are-marked-during-GC.patch
+0019-Cache-collapsed-minor-modes-keymap-in-mode-line-rend.patch
+0023-Stop-installing-repo-pre-commit-hooks.patch
+0025-Retry-transient-native-comp-failures.patch
+0026-Fix-W32-sleep-notification-crash.patch
+0027-Fix-W32-VT-child-frame-face-lookup.patch
+0029-Fix-W32-taskbar-badge-DC-leak.patch
+0030-Avoid-infinite-error-loop-in-dead-mini-window.patch
+0032-Honor-SPEC-TYPE-in-use-package-custom-face.patch
+0033-Add-W32-title-bar-visibility-control.patch
+0034-Keep-captionless-W32-frames-in-work-area.patch
+0035-Wake-W32-process-waits-after-SIGCHLD.patch
+0036-Dispatch-W32-thread-timer-callbacks.patch
+0037-Support-extended-length-W32-file-paths.patch
+0038-Stop-retrying-unscrollable-display-prefix.patch

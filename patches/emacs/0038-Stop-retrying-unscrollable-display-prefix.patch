@@ -1,0 +1,31 @@
+Date: Fri, 13 Nov 2026 15:19:57 +0800
+Subject: [PATCH] Stop retrying an unscrollable partial display prefix
+
+SPDX-FileCopyrightText: 2026 Chen Zhexuan
+SPDX-License-Identifier: GPL-3.0-or-later
+
+A multiline display prefix can leave the cursor row partially visible
+even when the effective window start is already point. After the existing
+forced-visibility phase, further buffer-position retries cannot reveal
+that row without passing point. Return to the existing redisplay fallback
+instead of repeatedly drawing the same prefix.
+
+Keep ordinary conservative scrolling, the oversized-row acceptance phase,
+post-scroll-hook start positions, and the top-vscroll exception unchanged.
+
+--- a/src/xdisp.c
++++ b/src/xdisp.c
+@@ -19739,6 +19739,13 @@
+ 		 (w, MATRIX_ROW (w->desired_matrix, w->cursor.vpos))))
+ 	{
+ 	  clear_glyph_matrix (w->desired_matrix);
++	  /* A multiline display string can put point below the first
++	     screen row even when the window starts at point.  Once the
++	     non-forced visibility test still fails, moving the buffer
++	     start cannot reveal more of that row without passing point.
++	     Let the fallback handle it instead of retrying forever.  */
++	  if (extra_scroll_margin_lines > 1 && CHARPOS (startp) == PT)
++	    return SCROLLING_FAILED;
+ 	  ++extra_scroll_margin_lines;
+ 	  goto too_near_end;
+ 	}

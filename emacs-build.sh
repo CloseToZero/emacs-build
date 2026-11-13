@@ -88,7 +88,7 @@ function check_mingw_architecture ()
 function ensure_mingw_build_software ()
 {
     echo Install essential packages
-    local build_packages="git zip unzip base-devel ${mingw_prefix}-toolchain autoconf automake"
+    local build_packages="git zip unzip base-devel ${mingw_prefix}-toolchain autoconf automake texinfo"
     pacman --noprogressbar --noconfirm --needed -S $build_packages
     if test "$?" != 0; then
         echo Unable to install $build_packages
@@ -184,9 +184,9 @@ function action0_clean_rest ()
 
 function action0_clone ()
 {
-    clone_repo "$emacs_branch" "$emacs_repo" "$emacs_source_dir"
+    clone_repo "$emacs_branch" "$emacs_repo" "$emacs_source_dir" || return $?
     if test "$emacs_apply_patches" = "yes"; then
-        apply_patches "$emacs_source_dir" || true
+        apply_patches "$emacs_source_dir" "$emacs_patch_series"
     fi
 }
 
@@ -473,6 +473,7 @@ emacs_build_threads=$((`nproc`*2))
 # Elpaca uses the build time to date built-in packages on development builds.
 emacs_build_options="--enable-build-details --without-dbus"
 emacs_apply_patches=yes
+emacs_patch_series=""
 emacs_nativecomp_aot=no
 emacs_pkg_msix=no
 # This is needed for pacman to return the right text
@@ -501,6 +502,7 @@ while test -n "$*"; do
         --repo) shift; emacs_repo="$1";;
         --branch) shift; emacs_branch="$1";;
         --no-patches) emacs_apply_patches=no;;
+        --patch-series) shift; emacs_patch_series="${1:?--patch-series requires a file}";;
         --with-all) add_all_features;;
         --without-*) delete_feature `echo $1 | sed -e 's,--without-,,'`;;
         --with-*) add_feature `echo $1 | sed -e 's,--with-,,'`;;

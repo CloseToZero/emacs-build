@@ -54,6 +54,10 @@ Actions:
 
 Build options:
    --branch b    Select Emacs branch (or tag) 'b' for the remaining operations.
+   --patch-series file
+                 Apply only the listed patch filenames, in order, during --clone.
+                 A failed or missing selected patch stops preparation.
+   --no-patches  Do not apply patches during --clone.
    --compress    Ship Emacs with gunzip and compress documentation and Emacs
                  script files.
    --debug       Output all statements run by the script.
@@ -83,6 +87,20 @@ Extensions:
    --mu          Mail search system and supporting Emacs mu4e libraries.
    --isync       Synchronize email from IMAP/POP to Maildir format (mbsync).
 ````
+
+### Patch selection
+
+Patches are applied during `--clone`, not by `--build` alone. Any selected patch failure stops
+preparation; it is never treated as evidence that the patch is obsolete. Without `--patch-series`,
+all direct `patches/emacs/*.patch` files are selected in filename order. A series file lists patch
+filenames relative to that directory, one per line; blank lines and `#` comments are ignored.
+Fresh source clones use repository-local LF settings so Autoconf continuations are not corrupted
+by a global Windows CRLF preference. No global Git configuration is changed.
+
+For the upstream Emacs 31 Windows build, use `--patch-series patches/emacs/upstream-31.series`.
+See [the audited selection](patches/upstream-31.md) for its base revision, retained capabilities,
+and intentionally unselected fork patches. Keep source checkouts and package outputs separate
+from an installed editor, and verify the actual source revision before building.
 
 ### An example
 

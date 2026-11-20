@@ -1,0 +1,20 @@
+{
+  "repository": "https://github.com/emacs-mirror/emacs.git",
+  "revision": "a2d49cab4db0c498cca73026e1e178503bc8eef1",
+  "version": "31.1.90",
+  "architecture": "arm64",
+  "minimum_macos": "14.0",
+  "series": "patches/macos/upstream-31.series",
+  "emacs_plus_patch_repository": "https://github.com/d12frosted/homebrew-emacs-plus",
+  "emacs_plus_patch_revision": "4522d6c0e8fe52b76a0ea37b676ae54b2accc7b9",
+  "homebrew_file_patches": {
+    "Patches/glib/hardcoded-paths.diff": {
+      "url": "https://raw.githubusercontent.com/Homebrew/homebrew-core/1cf441a09f572566b1b7c4695a4d169d1177248a/Patches/glib/hardcoded-paths.diff",
+      "sha256": "d846efd0bf62918350da94f850db33b0f8727fece9bfaf8164566e3094e80c97"
+    },
+    "Patches/gcc/gcc-16.1.0.diff": {
+      "url": "https://raw.githubusercontent.com/Homebrew/homebrew-core/d1a4ad9bcd210b9721a55370d6dd67e303b7b1fb/Patches/gcc/gcc-16.1.0.diff",
+      "sha256": "1593153257db78c270282742088ffe961b44d793f7bbaa458895357094d6f7fc"
+    }
+  }
+}

@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 Chen Zhexuan
+# SPDX-License-Identifier: MIT
+name: Test macOS recipe
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'emacs-build-macos.sh'
+      - 'scripts/macos/**'
+      - 'patches/emacs/**'
+      - 'patches/macos/**'
+      - '.github/workflows/test-macos-recipe.yml'
+  pull_request:
+    paths:
+      - 'emacs-build-macos.sh'
+      - 'scripts/macos/**'
+      - 'patches/emacs/**'
+      - 'patches/macos/**'
+      - '.github/workflows/test-macos-recipe.yml'
+permissions:
+  contents: read
+jobs:
+  preparation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Portable tests and shell syntax
+        run: |
+          bash -n emacs-build-macos.sh
+          python3 -m unittest discover -s scripts/macos -p 'test_*.py' -v
+      - name: Replay the pinned source and selected patches
+        run: |
+          ./emacs-build-macos.sh prepare
+          python3 -c 'import sys; sys.path.insert(0, "scripts/macos"); from build import validate_prepared_source; validate_prepared_source()'
+# This checks preparation, not macOS compilation, signing, GUI or relocation.
+# Full package acceptance must run on a macOS 14+ ARM64 build host.

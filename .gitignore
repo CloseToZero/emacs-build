@@ -7,3 +7,5 @@ zips
 msys64
 *.log
 .applied
+__pycache__/
+*.pyc

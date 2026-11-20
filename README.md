@@ -2,6 +2,15 @@
 
 Scripts to build a distribution of Emacs from sources, using MSYS2 and Mingw64(32)
 
+## macOS / Apple Silicon
+
+A separate pinned macOS 14+ arm64 recipe is available in
+[`emacs-build-macos.sh`](emacs-build-macos.sh). It builds a self-contained Cocoa
+app with native AOT/JIT support, selected shared fixes and Emacs Plus Cocoa
+patches. See [macOS build, packaging and acceptance instructions](README-macos.md)
+for requirements, signing limitations and safe side-by-side testing. The Windows
+instructions and build workflow below are unchanged.
+
 ## Rationale
 
 I wanted a script to build Emacs from sources, package it and install it on

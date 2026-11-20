@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Chen Zhexuan
+# SPDX-License-Identifier: MIT
+# Paths relative to the build repository root. Order is significant.
+patches/emacs/0004-Fix-tab-bar-highlight-after-clearing-mouse-face.patch
+patches/emacs/0010-package-quickstart-refresh-dont-require-info-delay-l.patch
+patches/emacs/0012-Fix-empty-minor-mode-doc-string-causes-error.patch
+patches/emacs/0016-Ensure-sys_jmp_buf-structures-are-marked-during-GC.patch
+patches/emacs/0019-Cache-collapsed-minor-modes-keymap-in-mode-line-rend.patch
+patches/emacs/0030-Avoid-infinite-error-loop-in-dead-mini-window.patch
+patches/emacs/0032-Honor-SPEC-TYPE-in-use-package-custom-face.patch
+patches/emacs/0038-Stop-retrying-unscrollable-display-prefix.patch
+patches/emacs/0040-Keep-backward-screen-line-motion-past-overlay-tails.patch
+patches/macos/fix-ns-x-colors.patch
+patches/macos/system-appearance.patch
+patches/macos/round-undecorated-frame.patch

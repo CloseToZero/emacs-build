@@ -134,6 +134,11 @@ Full acceptance verifies a relocated ZIP extraction with:
   server, without connecting to an existing editor.
 - A real HTTPS request using system CA trust, not a Cellar certificate bundle.
 
+A separate minimal-environment GUI startup probe checks generic external-tool
+PATH/exec-path setup before/after frame initialization. It runs outside the
+no-Homebrew sandbox because it must observe the build host's installed tool
+directories; it is not used as evidence of standalone runtime operation.
+
 The final ZIP is copied from the **exact archive that was extracted and tested**,
 not generated again after testing. Stale product identities or recipe commits
 prevent archiving. Source archives omit the repository's Windows test signing key

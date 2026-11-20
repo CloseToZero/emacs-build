@@ -33,7 +33,9 @@
 
 ;; Finder does not inherit a login shell's PATH. These are generic tool
 ;; locations, never a snapshot of the builder's personal environment.
-(when (display-graphic-p)
+;; site-start runs before the initial graphical frame exists. Test the
+;; requested window system, not `display-graphic-p' on the bootstrap frame.
+(when (eq initial-window-system 'ns)
   (dolist (directory '("/opt/homebrew/bin" "/usr/local/bin"))
     (when (and (file-directory-p directory) (not (member directory exec-path)))
       (setq exec-path (append exec-path (list directory)))

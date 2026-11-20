@@ -67,6 +67,19 @@ def verify_client(app, sandbox, env, state, init):
                         process.wait()
 
 
+def verify_gui_tool_paths(app, env, state, init):
+    # This separate probe must see the build host's generic tool directories.
+    # The runtime/AOT/JIT suites above still run with all Homebrew reads denied.
+    output = state / "gui-tool-paths.json"
+    expression = '(progn (require (quote json)) (run-at-time 0.2 nil (lambda () (with-temp-file ' + json.dumps(str(output)) + ' (insert (json-serialize (list :path (getenv "PATH") :exec (vconcat exec-path))))) (kill-emacs 0))))'
+    checked([app / "Contents/MacOS/Emacs", "-q", "--init-directory", init, "--eval", expression],
+            env, state, "gui-tool-paths", timeout=30)
+    data = json.loads(output.read_text())
+    expected = [p for p in ("/opt/homebrew/bin", "/usr/local/bin") if Path(p).is_dir()]
+    if not expected or any(p not in data["exec"] or p not in data["path"].split(":") for p in expected):
+        raise RuntimeError("GUI startup lost generic external tool paths")
+
+
 def verify():
     identity = product_identity()
     audit(APP)
@@ -147,12 +160,13 @@ int emacs_module_init(struct emacs_runtime *runtime) {
     logs = "".join(p.read_text(errors="replace") for p in state.glob("*.stderr.log"))
     if any("/opt/homebrew/" in line for line in logs.splitlines() if line.startswith("dyld[") and "/opt/homebrew/" in line):
         raise RuntimeError("A Homebrew image was loaded")
+    verify_gui_tool_paths(app, env, state, init)
     if identity != product_identity():
         raise RuntimeError("Product changed during verification")
     result = {"success": True, "identity": identity, "state": str(state), "archive_sha256": digest(archive),
               "batch_erts": 7, "quick_aot_erts": 3, "graphical_erts": 11,
               "runtime": json.loads((state / "runtime.json").read_text()),
-              "post_redisplay_timer": True, "https_system_trust": True, "native_client_launch": True,
+              "post_redisplay_timer": True, "https_system_trust": True, "native_client_launch": True, "gui_tool_paths": True,
               "sandbox_denied": blocked, "zip_round_trip": True,
               "signing": "ad-hoc, not notarized"}
     (WORK / "verification.json").write_text(json.dumps(result, indent=2) + "\n")

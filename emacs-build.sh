@@ -591,11 +591,10 @@ emacs_srcfile="$emacs_build_root/zips/emacs-${emacs_branch_name}_src.zip"
 emacs_dependencies=""
 
 for action in $actions; do
-    if $action 2>&1 ; then
+    if $action; then
         echo Action $action succeeded.
     else
-        echo Action $action failed.
-        echo Aborting builds for branch $emacs_branch and architecture ${architecture}
-        exit -1
+        errcho "Action $action failed. Aborting build for $emacs_branch ($architecture)."
+        exit 1
     fi
 done

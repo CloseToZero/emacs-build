@@ -90,8 +90,9 @@ Extensions:
 
 ### Patch selection
 
-Patches are applied during `--clone`, not by `--build` alone. Any selected patch failure stops
-preparation; it is never treated as evidence that the patch is obsolete. Without `--patch-series`,
+Patches are applied during `--clone`, not by `--build` alone. If a selected patch fails, the builder
+reports its filename and Git's error on stderr and exits nonzero before configuration or packaging.
+A failure is never treated as evidence that the patch is obsolete. Without `--patch-series`,
 all direct `patches/emacs/*.patch` files are selected in filename order. A series file lists patch
 filenames relative to that directory, one per line; blank lines and `#` comments are ignored.
 Fresh source clones use repository-local LF settings so Autoconf continuations are not corrupted

@@ -44,23 +44,22 @@ The long-path and timer contracts and tests are documented in
 [`README-ime.md`](../scripts/tests/README-ime.md). Their earlier results are not acceptance results
 for a new binary. Validate the actual newly packaged and relocated executable and matching dump.
 
-## Unselected inherited patches
+## Removed incompatible fork patches
 
-The previous builder ignored patch failures. Sequential index-only checks against its recorded
-base, `769bd89281062bcf19fcb7985051b06fb0c0849b`, found that these 11 patches did not apply there
-either. The selected existing patches do not silently lose behavior present in that recorded build;
-0038 and 0039 are additional downstream fixes.
+Eleven unselected patch files were byte-identical to the public `kiennq/emacs-build` fork's
+committed payloads ([`6c61c95`](https://github.com/kiennq/emacs-build/commit/6c61c95) and
+[`b85158f`](https://github.com/kiennq/emacs-build/commit/b85158f)). None contained local edits.
+They failed sequential application checks on the pinned `a2d49cab` base and were not part of the
+effective previous build on `769bd892`. They were removed from the active patch directory;
+all 28 selected payloads remain unchanged. The filenames are recoverable from Git history.
 
-| Patches | Scope and disposition |
+| Patches | Why removed from this recipe |
 | --- | --- |
-| 0002, 0003, 0006, 0020 | IGC/MPS or fork-specific prerequisites are absent from this upstream/MPS-off target. |
-| 0005 | Experimental marker/text-index changes conflict with this source line; not part of the effective previous release. |
-| 0018 | Broad Windows caching/performance bundle conflicts as a whole; not part of the effective previous release. |
-| 0021, 0022 | Fork-specific emacsclient signal implementation and its dependent repair did not apply to the previous upstream base. |
-| 0024 | Hook deletion conflicts with the source tree; selected 0023 still disables hook installation. |
-| 0028 | The inherited Info-generation patch did not apply to the recorded previous base; verify clean documentation generation separately. |
-| 0031 | The mixed IGC/thread-wait patch did not apply to the recorded previous base. Ordinary process/file-notification tests still matter with MPS disabled. |
+| 0002, 0003, 0006, 0020, 0031 | Require fork-specific IGC/MPS sources absent from this target. |
+| 0005, 0018 | Experimental text-index and Windows caching bundles conflict with the pinned source. |
+| 0021, 0022 | The fork's Windows emacsclient signal implementation and follow-up do not apply. |
+| 0024 | Hook deletion conflicts; selected 0023 still disables hook installation. |
+| 0028 | Info-generation change conflicts; clean top-level Info generation was verified separately. |
 
-These findings do not prove that every idea in an unselected patch is obsolete or already upstream.
-The patch files remain available for separately reviewed fork targets. A new conflict in a selected
-patch requires investigation, not a change to this list merely to make the build pass.
+This does not declare the patches obsolete for their original fork target. A new failure in a
+selected payload stops preparation and requires investigation; it is not a reason to skip it.

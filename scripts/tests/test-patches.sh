@@ -115,4 +115,30 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass \
     -Bash "$(cygpath -w "$(command -v bash)")"
 test "$(<"$source_dir/value.txt")" = base
 echo 'PASS: locked series applies no patches'
-echo '8 build-preparation checks passed'
+cli="$work/cli"
+mkdir -p "$cli/scripts" "$cli/patches/emacs" "$cli/bin"
+cp "$root/emacs-build.sh" "$cli/"
+for helper in tools pdf-tools aspell hunspell msys2_extra gnutls; do
+    cp "$root/scripts/$helper.sh" "$cli/scripts/"
+done
+cp "$work/failure/patches/emacs/"*.patch "$cli/patches/emacs/"
+printf '%s\n' '0001.patch' '0002.patch' > "$cli/series"
+# Keep the fixture independent of the installed MSYS2 package set.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$cli/bin/pacman"
+chmod +x "$cli/bin/pacman"
+if (cd "$cli" && PATH="$cli/bin:$PATH" MSYSTEM=UCRT64 \
+        MINGW_PREFIX=/ucrt64 MINGW_PACKAGE_PREFIX=mingw-w64-ucrt-x86_64 \
+        bash ./emacs-build.sh --clone --configure --repo "$producer" --branch main \
+        --patch-series series > "$cli/stdout" 2> "$cli/stderr"); then
+    echo 'FAIL: the build command succeeded after Git rejected a patch' >&2
+    exit 1
+fi
+grep -Fq 'error: ' "$cli/stderr"
+grep -Fq "Patch failed; build preparation stopped: $cli/patches/emacs/0001.patch" "$cli/stderr"
+grep -Fq 'Action action0_clone failed.' "$cli/stderr"
+if grep -Fq 'Preparing build directory' "$cli/stdout" || test -e "$cli/git/main/later.txt"; then
+    echo 'FAIL: the build command continued after a patch failure' >&2
+    exit 1
+fi
+echo 'PASS: the build command reports patch failure on stderr and exits before configuration'
+echo '9 build-preparation checks passed'

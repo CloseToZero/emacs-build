@@ -1,0 +1,44 @@
+Subject: [PATCH] Keep backward screen-line motion past overlay tails
+
+SPDX-FileCopyrightText: 2026 Chen Zhexuan
+SPDX-License-Identifier: GPL-3.0-or-later
+
+At the end of the accessible buffer a display replacement can consume
+an entire candidate row.  With a newline-bearing overlay at that end,
+reseating on the preceding buffer line can jump straight back to the
+same endpoint.  Counting that line makes a one-line command stall and
+larger counts stop short.
+
+Use the raw line boundary for the backward search and its forward
+rescan when reseating proves it collapses into the same endpoint.
+Preserve the existing wrapped-line correction and iterator state for
+ordinary end-of-buffer movement.
+
+--- a/src/xdisp.c
++++ b/src/xdisp.c
+@@ -11564,6 +11564,25 @@
+       /* Go back -DVPOS buffer lines, but no farther than -DVPOS full
+ 	 screen lines, and reseat the iterator there.  */
+       start_charpos = IT_CHARPOS (*it);
++      if (dvpos < 0 && start_charpos == ZV && start_charpos > BEGV)
++	{
++	  /* An empty display replacement before an end-of-buffer
++	     overlay can make the preceding buffer line reseat at ZV.
++	     Start the backward search at that raw line boundary, so
++	     we don't spend a step landing back at the same position.  */
++	  SAVE_IT (it2, *it, it2data);
++	  back_to_previous_visible_line_start (&it2);
++	  struct text_pos previous = it2.current.pos;
++	  reseat (&it2, previous, true);
++	  bool collapsed = (CHARPOS (previous) < start_charpos
++			    && IT_CHARPOS (it2) == start_charpos);
++	  RESTORE_IT (it, it, it2data);
++	  if (collapsed)
++	    {
++	      reseat_1 (it, previous, true);
++	      start_charpos = CHARPOS (previous);
++	    }
++	}
+       if (it->line_wrap == TRUNCATE || nchars_per_row == 0)
+ 	pos_limit = BEGV;
+       else

@@ -133,6 +133,89 @@
       (should (> calls 0))
       (should (pos-visible-in-window-p (point))))))
 
+(defun redisplay-tests--motion-from (start lines)
+  "Move visually by LINES after displaying START; return distance and point."
+  (goto-char start)
+  (recenter nil)
+  (redisplay t)
+  (list (vertical-motion lines) (point)))
+
+(defun redisplay-tests--tail-overlay (label)
+  "Display LABEL after the end of the buffer, without inserting text."
+  (let ((tail (make-overlay (point-max) (point-max))))
+    (overlay-put tail 'after-string label)
+    tail))
+
+(ert-deftest redisplay-tests-backward-motion-from-eob-overlay ()
+  (skip-unless (display-graphic-p))
+  (redisplay-tests--with-window
+    (insert "First source row\n")
+    (let* ((second (point))
+           (heading (progn (insert "Second source row\n") (point))))
+      (insert "Last source row\n" (propertize " " 'display ""))
+      (dolist (label (list "\nStatus" "\nFirst status row\nSecond status row"
+                           (concat "\n" (make-string (* 2 (window-body-width)) ?x))))
+        (let ((tail (redisplay-tests--tail-overlay label)))
+          (unwind-protect
+              (progn
+                (should (equal (redisplay-tests--motion-from (point-max) -1)
+                               (list -1 heading)))
+                (should (equal (redisplay-tests--motion-from (point-max) -2)
+                               (list -2 second)))
+                (should (equal (redisplay-tests--motion-from (1- (point-max)) '(0 . -1))
+                               (list -1 heading)))
+                (goto-char (point-max))
+                (recenter nil)
+                (redisplay t)
+                (let ((line-move-visual t) (goal-column nil)
+                      (this-command 'previous-line) (last-command nil))
+                  (call-interactively #'previous-line)
+                  (should (= (line-beginning-position) heading))
+                  (redisplay t)
+                  (call-interactively #'previous-line)
+                  (should (< (point) heading))))
+            (delete-overlay tail)))))))
+
+(ert-deftest redisplay-tests-backward-motion-from-eob-keeps-wrapping ()
+  (skip-unless (display-graphic-p))
+  (redisplay-tests--with-window
+    (insert "Earlier row\n")
+    (let ((last (point)))
+      (insert (make-string (+ 12 (* 2 (window-body-width))) ?x)
+              "\n" (propertize " " 'display ""))
+      (let ((expected (redisplay-tests--motion-from (point-max) -1)))
+        (should (= (car expected) -1))
+        (should (> (cadr expected) last))
+        (redisplay-tests--tail-overlay "\nStatus")
+        (should (equal (redisplay-tests--motion-from (point-max) -1) expected))))))
+
+(ert-deftest redisplay-tests-backward-motion-respects-narrowed-tail ()
+  (skip-unless (display-graphic-p))
+  (redisplay-tests--with-window
+    (insert "Outside before\n")
+    (let ((first (point)))
+      (insert "Visible first\n")
+      (let ((second (point)))
+        (insert "Visible second\n" (propertize " " 'display ""))
+        (let ((end (point)))
+          (insert "Outside after\n")
+          (narrow-to-region first end)
+          (redisplay-tests--tail-overlay "\nStatus at the accessible end")
+          (should (equal (redisplay-tests--motion-from end -1) (list -1 second)))
+          (should (equal (redisplay-tests--motion-from end -2) (list -2 first))))))))
+
+(ert-deftest redisplay-tests-backward-motion-keeps-real-buffer-edges ()
+  (skip-unless (display-graphic-p))
+  (redisplay-tests--with-window
+    (redisplay-tests--tail-overlay "\nStatus")
+    (should (equal (redisplay-tests--motion-from (point-min) -1) (list 0 (point-min))))
+    (insert "First source row\n")
+    (let ((second (point)))
+      (insert "Last source row\n")
+      (redisplay-tests--tail-overlay "\nStatus after a real newline")
+      (should (equal (redisplay-tests--motion-from (point-max) -1) (list -1 second)))
+      (should (equal (redisplay-tests--motion-from (point-max) -2) (list -2 (point-min)))))))
+
 (setq frame-title-format "ISOLATED native redisplay tests"
       inhibit-startup-screen t)
 (set-face-attribute 'default nil :family "IBM Plex Mono" :height 120)

@@ -14,7 +14,7 @@ Run `bash scripts/tests/test-patches.sh` to check selection, order, failure prop
 
 ## Retained behavior
 
-The series contains 25 unchanged existing payloads plus downstream patches 0038 and 0039,
+The series contains 25 unchanged existing payloads plus downstream patches 0038 through 0040,
 in dependency order.
 In particular, it retains:
 
@@ -34,6 +34,10 @@ In particular, it retains:
   nonblocking reclamation and independent retirement. Reselect after 0035's callbacks instead
   of consuming stale readiness, while retaining its prompt idle-completion behavior. See the
   [pipe lifecycle checks](../scripts/tests/README-w32-pipes.md).
+- 0040: start the backward screen-line search before an inaccessible tail row when
+  reseating on it would jump to the same end position. This lets repeated and counted
+  motions leave a virtual tail while preserving the wrapped-line scan.
+  See the [graphical redisplay checks](../scripts/tests/README-redisplay.md).
 
 The long-path and timer contracts and tests are documented in
 [`README-w32-long-path.md`](../scripts/tests/README-w32-long-path.md) and

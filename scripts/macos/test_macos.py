@@ -15,7 +15,9 @@ import sources
 class MacOSRecipeTests(unittest.TestCase):
     def test_locked_selection(self):
         items = build.patch_inventory()
-        self.assertEqual(len(items), 12)
+        self.assertEqual(len(items), 13)
+        self.assertIn("patches/emacs/0041-Copy-SQLite-text-and-blob-parameters.patch",
+                      [p["path"] for p in items])
         self.assertEqual(sum(p["path"].startswith("patches/macos/") for p in items), 3)
         self.assertFalse(any(p["path"].split("/")[-1].startswith(("0001-", "0008-", "0025-")) for p in items))
 

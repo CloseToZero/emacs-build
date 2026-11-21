@@ -142,6 +142,9 @@ int emacs_module_init(struct emacs_runtime *runtime) {
     batch_selector = "^macos-smoke-\\(features\\|runtime-paths\\|aot\\|sqlite-and-xml\\|module\\|process\\|jit\\)$"
     checked([*sandbox, emacs, "--batch", "-q", "--init-directory", init, "-l", smoke,
              "--eval", f"(ert-run-tests-batch-and-exit {json.dumps(batch_selector)})"], env, state, "batch")
+    checked([*sandbox, emacs, "--batch", "-Q", "--init-directory", init,
+             "-l", ROOT / "scripts/tests/sqlite-binding-tests.el",
+             "-f", "ert-run-tests-batch-and-exit"], env, state, "sqlite-binding")
     quick_selector = "^macos-smoke-\\(features\\|runtime-paths\\|aot\\)$"
     checked([*sandbox, emacs, "--batch", "-Q", "--init-directory", init, "-l", smoke,
              "--eval", f"(ert-run-tests-batch-and-exit {json.dumps(quick_selector)})"], env, state, "quick-aot")
@@ -164,7 +167,7 @@ int emacs_module_init(struct emacs_runtime *runtime) {
     if identity != product_identity():
         raise RuntimeError("Product changed during verification")
     result = {"success": True, "identity": identity, "state": str(state), "archive_sha256": digest(archive),
-              "batch_erts": 7, "quick_aot_erts": 3, "graphical_erts": 11,
+              "batch_erts": 7, "sqlite_binding_erts": 2, "quick_aot_erts": 3, "graphical_erts": 11,
               "runtime": json.loads((state / "runtime.json").read_text()),
               "post_redisplay_timer": True, "https_system_trust": True, "native_client_launch": True, "gui_tool_paths": True,
               "sandbox_denied": blocked, "zip_round_trip": True,

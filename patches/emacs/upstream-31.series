@@ -29,3 +29,4 @@
 0038-Stop-retrying-unscrollable-display-prefix.patch
 0039-Retire-W32-readers-before-slot-reuse.patch
 0040-Keep-backward-screen-line-motion-past-overlay-tails.patch
+0041-Copy-SQLite-text-and-blob-parameters.patch

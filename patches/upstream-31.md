@@ -14,7 +14,7 @@ Run `bash scripts/tests/test-patches.sh` to check selection, order, failure prop
 
 ## Retained behavior
 
-The series contains 25 unchanged existing payloads plus downstream patches 0038 through 0040,
+The series contains 25 unchanged existing payloads plus downstream patches 0038 through 0041,
 in dependency order.
 In particular, it retains:
 
@@ -38,6 +38,11 @@ In particular, it retains:
   reseating on it would jump to the same end position. This lets repeated and counted
   motions leave a virtual tail while preserving the wrapped-line scan.
   See the [graphical redisplay checks](../scripts/tests/README-redisplay.md).
+- 0041: copy bound SQLite text and BLOB parameters so a live statement never borrows bytes
+  from the Lisp heap across garbage collection. Run the
+  [SQLite binding checks](../scripts/tests/sqlite-binding-tests.el) against the relocated
+  `bin/emacs.exe` with a disposable home and init directory. Load the test file under
+  `--batch -Q` and invoke `-f ert-run-tests-batch-and-exit`.
 
 The long-path and timer contracts and tests are documented in
 [`README-w32-long-path.md`](../scripts/tests/README-w32-long-path.md) and
@@ -51,7 +56,7 @@ committed payloads ([`6c61c95`](https://github.com/kiennq/emacs-build/commit/6c6
 [`b85158f`](https://github.com/kiennq/emacs-build/commit/b85158f)). None contained local edits.
 They failed sequential application checks on the pinned `a2d49cab` base and were not part of the
 effective previous build on `769bd892`. They were removed from the active patch directory;
-all 28 selected payloads remain unchanged. The filenames are recoverable from Git history.
+the 28 previously selected payloads remain unchanged. Git history retains the removed filenames.
 
 | Patches | Why removed from this recipe |
 | --- | --- |

@@ -10,6 +10,7 @@ patches/emacs/0030-Avoid-infinite-error-loop-in-dead-mini-window.patch
 patches/emacs/0032-Honor-SPEC-TYPE-in-use-package-custom-face.patch
 patches/emacs/0038-Stop-retrying-unscrollable-display-prefix.patch
 patches/emacs/0040-Keep-backward-screen-line-motion-past-overlay-tails.patch
+patches/emacs/0041-Copy-SQLite-text-and-blob-parameters.patch
 patches/macos/fix-ns-x-colors.patch
 patches/macos/system-appearance.patch
 patches/macos/round-undecorated-frame.patch

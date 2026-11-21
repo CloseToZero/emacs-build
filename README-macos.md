@@ -4,8 +4,8 @@
 
 A separate, pinned Cocoa/NS build for **macOS 14+ / arm64**, based on upstream
 Emacs **31.1.90** at `a2d49cab4db0c498cca73026e1e178503bc8eef1`.
-This is a development snapshot, not an official stable GNU release. The existing
-Windows scripts, patch series and release workflow are unchanged.
+This is a development snapshot, not an official stable GNU release. The macOS
+recipe has its own patch selection and release workflow separate from Windows.
 
 ## Features and selection
 
@@ -14,9 +14,8 @@ Windows scripts, patch series and release workflow are unchanged.
   threads, native file notifications, Cocoa rendering and native fullscreen.
 - The three Emacs Plus Cocoa patches: system appearance notifications, refreshed
   NS color names, and optional rounded undecorated frames.
-- Nine shared downstream correctness/performance fixes, including redisplay
-  progress (0038), overlay-tail backward motion (0040), and cached collapsed
-  minor-mode menus (0019).
+- Ten shared downstream correctness/performance fixes, including redisplay progress (0038),
+  overlay-tail backward motion (0040), and SQLite parameter ownership (0041).
 - No MPS/IGC, Xwidgets, DBus, ImageMagick, Windows-specific patches, suppressed
   compilation errors or LEIM omission. See [patch provenance](patches/macos/README.md).
 
@@ -127,7 +126,9 @@ Full acceptance verifies a relocated ZIP extraction with:
 - File content, executable modes, symlinks, code signatures, architecture and
   minimum-OS checks; every non-system dynamic load stays in the extracted app.
 - AOT loading with `-Q` and JIT disabled, real JIT compilation/execution, SQLite,
-  libxml, module loading, process completion, and required feature availability.
+  libxml, module loading, process completion, and required feature availability. The SQLite
+  binding checks verify that deferred statements keep the original text and BLOB values after
+  the original strings are overwritten and garbage collection runs.
 - Nine graphical redisplay/motion ERTs, Cocoa appearance/round-frame and image
   checks, plus a separate post-redisplay timer. No graphical skips are accepted.
 - The native client launcher creates a frame in an owned, uniquely named GUI

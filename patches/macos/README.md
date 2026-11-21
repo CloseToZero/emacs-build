@@ -8,10 +8,11 @@ Base: upstream `a2d49cab4db0c498cca73026e1e178503bc8eef1`, Emacs 31.1.90.
 
 ## Shared fixes
 
-Unchanged payloads: 0004, 0010, 0012, 0016, 0019, 0030, 0032, 0038, 0040.
+Shared payloads: 0004, 0010, 0012, 0016, 0019, 0030, 0032, 0038, 0040, 0041.
 These cover tab-bar highlighting, quickstart startup, minor-mode documentation,
 GC roots, collapsed minor-mode keymap allocation, dead minibuffer error loops,
-use-package custom-face handling, redisplay progress and overlay-tail motion.
+use-package custom-face handling, redisplay progress, overlay-tail motion, and SQLite parameter
+ownership across garbage collection.
 
 No Windows process, timer, IME, long-path or title-bar patches are selected.
 The Windows compile-error suppression (0001), LEIM/dictionary omission (0008),
